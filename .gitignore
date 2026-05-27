@@ -1,12 +1,25 @@
-# --- My Project Specifics ---
-venv/
-__pycache__/
+# --- Project Specifics (Drone Identification) ---
 data/
 output/
+images/
+temp/
 .env
 
-# --- Standard Python / Environment Defaults ---
-# Byte-compiled / optimized / DLL files
+# --- Machine Learning & Large Models ---
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+# Ignore large dataset folders
+datasets/
+synthetic_data/
+
+# --- Standard Python / Environments ---
+venv/
+.venv/
+env/
+__pycache__/
 *.py[codz]
 *$py.class
 *.so
@@ -14,32 +27,14 @@ output/
 # Distribution / packaging
 .Python
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Unit test / coverage reports
-.pytest_cache/
-.coverage
-htmlcov/
 
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# IDEs (VS Code / Cursor)
+# IDEs (VS Code / Cursor / PyCharm)
 .vscode/
 .idea/
+.cursor/
 tempCodeRunnerFile.py
