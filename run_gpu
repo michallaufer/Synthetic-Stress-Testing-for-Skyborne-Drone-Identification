@@ -1,0 +1,498 @@
+import os
+import subprocess
+import tarfile
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+
+import requests
+import runpod
+import urllib3
+from dotenv import load_dotenv
+
+load_dotenv()
+runpod.api_key = os.getenv("RUNPOD_API_KEY")
+
+
+# ---------------------------------------------------------------------
+# RunPod GPU launcher for the drone stress-testing project
+#
+# What it does:
+# 1. Starts/resumes a RunPod pod.
+# 2. Waits until SSH is ready.
+# 3. Uploads a snapshot of the local repo to the pod.
+# 4. Runs a configurable command/script remotely.
+# 5. Downloads artifacts.
+# 6. Stops the pod by default to save money.
+#
+# Required .env:
+#   RUNPOD_API_KEY=...
+#   RUNPOD_POD_ID=...          # your NEW pod id for this project
+#
+# Optional .env:
+#   RUNPOD_SSH_IP=...
+#   RUNPOD_SSH_PORT=...
+#   SSH_KEY=~/.ssh/id_ed25519
+#   REMOTE_PROJECT_PATH=/workspace/drone-stress-benchmark
+#   STOP_POD=1                 # default: stop pod after run
+#   UPLOAD_DATA=1              # default: include data/raw and data/processed if small
+#   REMOTE_RUN_CMD="..."       # override the default remote command
+# ---------------------------------------------------------------------
+
+
+# Minimal POSIX shell-quote for safe values in bash scripts.
+def _sh_quote(s: str) -> str:
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
+def _enable_insecure_runpod_api_ssl_verify() -> None:
+    """
+    Bypass SSL verification for RunPod API calls made via requests inside the runpod library.
+    This is intentionally insecure and should only be used when local CA trust is broken.
+    """
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    orig_request = requests.sessions.Session.request
+
+    def patched_request(self, method, url, **kwargs):
+        if isinstance(url, str) and ("api.runpod.io" in url or "runpod.io" in url):
+            kwargs.setdefault("verify", False)
+        return orig_request(self, method, url, **kwargs)
+
+    requests.sessions.Session.request = patched_request
+
+
+# ----------------------------- CONFIG --------------------------------
+
+POD_ID = os.getenv("RUNPOD_POD_ID", "").strip()
+GPU_COUNT = int(os.getenv("RUNPOD_GPU_COUNT", "1"))
+
+PORT = os.getenv("RUNPOD_SSH_PORT", "").strip() or "22"
+IP = os.getenv("RUNPOD_SSH_IP", "").strip() or ""
+
+SSH_KEY = os.path.expanduser(os.getenv("SSH_KEY", "~/.ssh/id_ed25519"))
+REMOTE_PROJECT_PATH = os.getenv("REMOTE_PROJECT_PATH", "/workspace/drone-stress-benchmark").strip()
+
+STOP_POD = os.getenv("STOP_POD", "1") != "0"
+UPLOAD_DATA = os.getenv("UPLOAD_DATA", "1") != "0"
+
+# Make SSH/SCP non-interactive.
+SSH_COMMON_OPTS = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=20",
+    "-o", "ServerAliveInterval=30",
+    "-o", "ServerAliveCountMax=6",
+]
+
+
+def _resolve_ssh_target_from_runtime(pod: dict) -> tuple[str, str]:
+    """Resolve public SSH IP/port from RunPod runtime metadata, with env fallback."""
+    runtime = pod.get("runtime") if isinstance(pod, dict) else None
+    if isinstance(runtime, dict):
+        ports = runtime.get("ports")
+        port = None
+        ip = None
+
+        if isinstance(ports, list):
+            # Common schema: runtime.ports is a list of dicts with privatePort/publicPort/ip/type.
+            for p in ports:
+                if not isinstance(p, dict):
+                    continue
+                if str(p.get("privatePort")) == "22" and str(p.get("type", "")).lower() in {"tcp", "ssh"}:
+                    ip = p.get("ip") or p.get("publicIp") or p.get("host")
+                    port = p.get("publicPort") or p.get("hostPort") or p.get("port")
+                    break
+
+            # Fallback: match port 22 even if type is missing/different.
+            if ip is None or port is None:
+                for p in ports:
+                    if not isinstance(p, dict):
+                        continue
+                    if str(p.get("privatePort")) == "22" or str(p.get("containerPort")) == "22":
+                        ip = ip or p.get("ip") or p.get("publicIp") or p.get("host")
+                        port = port or p.get("publicPort") or p.get("hostPort") or p.get("port")
+                        break
+
+        elif isinstance(ports, dict):
+            port = ports.get("22") or ports.get(22)
+            ip = runtime.get("publicIp") or runtime.get("ip") or runtime.get("podIP") or runtime.get("host")
+        else:
+            ip = runtime.get("publicIp") or runtime.get("ip") or runtime.get("podIP") or runtime.get("host")
+
+        if ip and port:
+            return str(ip), str(port)
+
+    if not IP:
+        raise RuntimeError("Could not resolve pod SSH IP/port. Set RUNPOD_SSH_IP and RUNPOD_SSH_PORT.")
+    return IP, PORT
+
+
+def _wait_for_ssh(ssh_ip: str, ssh_port: str, *, timeout_s: int = 420, sleep_s: int = 5) -> None:
+    """Poll until SSH is accepting connections."""
+    print(f"Waiting for SSH at {ssh_ip}:{ssh_port} ...")
+    deadline = time.time() + timeout_s
+    attempt = 0
+
+    while True:
+        attempt += 1
+        if time.time() > deadline:
+            raise TimeoutError(f"SSH did not become available within {timeout_s}s for {ssh_ip}:{ssh_port}")
+
+        try:
+            subprocess.run(
+                [
+                    "ssh",
+                    *SSH_COMMON_OPTS,
+                    "-p",
+                    str(ssh_port),
+                    "-i",
+                    SSH_KEY,
+                    f"root@{ssh_ip}",
+                    "true",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print("SSH is ready.")
+            return
+        except Exception:
+            if attempt % 6 == 1:
+                print("SSH not ready yet; retrying...")
+            time.sleep(sleep_s)
+
+
+def _should_include_file(path: Path, project_root: Path) -> bool:
+    """
+    Decide whether a file should be included in the uploaded snapshot.
+
+    Principle:
+    - Upload code/config/small pilot data.
+    - Never upload secrets.
+    - Avoid huge outputs/models/runs.
+    - Preserve remote datasets/artifacts on the pod.
+    """
+    rel = path.relative_to(project_root)
+    parts = set(rel.parts)
+    rel_posix = rel.as_posix()
+
+    # Never upload secrets.
+    if rel_posix == ".env" or path.name.endswith(".pem"):
+        return False
+
+    ignored_dirs = {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".idea",
+        ".vscode",
+        ".venv",
+        "venv",
+        "env",
+        "models",
+        "checkpoints",
+        "runs",
+        "wandb",
+        "outputs",
+    }
+    if parts & ignored_dirs:
+        return False
+
+    # Usually synthetic outputs can be regenerated and can be large.
+    if rel_posix.startswith("data/synthetic/"):
+        return False
+
+    # Optionally skip all data when it already lives on the pod.
+    if not UPLOAD_DATA and rel_posix.startswith("data/"):
+        return False
+
+    ignored_names = {".DS_Store", "Thumbs.db"}
+    if path.name in ignored_names:
+        return False
+
+    ignored_suffixes = {
+        ".tgz",
+        ".tar",
+        ".tar.gz",
+        ".zip",
+        ".7z",
+        ".rar",
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".pt",
+        ".pth",
+        ".onnx",
+        ".safetensors",
+    }
+    if path.suffix.lower() in ignored_suffixes:
+        return False
+
+    return True
+
+
+def _upload_project_snapshot(ssh_ip: str, ssh_port: str) -> None:
+    """Create a tar.gz of the local repo and upload/extract it on the pod."""
+    print("Uploading local project snapshot to pod...")
+
+    project_root = Path(__file__).resolve().parent
+    remote_tar = "/tmp/drone_stress_benchmark_project.tgz"
+
+    with tempfile.TemporaryDirectory() as td:
+        local_tar = Path(td) / "project.tgz"
+
+        with tarfile.open(local_tar, "w:gz") as tf:
+            for p in project_root.rglob("*"):
+                if p.is_dir():
+                    continue
+                if _should_include_file(p, project_root):
+                    tf.add(p, arcname=p.relative_to(project_root).as_posix())
+
+        subprocess.run(
+            [
+                "scp",
+                *SSH_COMMON_OPTS,
+                "-P",
+                str(ssh_port),
+                "-i",
+                SSH_KEY,
+                str(local_tar),
+                f"root@{ssh_ip}:{remote_tar}",
+            ],
+            check=True,
+        )
+
+    subprocess.run(
+        [
+            "ssh",
+            *SSH_COMMON_OPTS,
+            "-p",
+            str(ssh_port),
+            "-i",
+            SSH_KEY,
+            f"root@{ssh_ip}",
+            f"mkdir -p {_sh_quote(REMOTE_PROJECT_PATH)}",
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "ssh",
+            *SSH_COMMON_OPTS,
+            "-p",
+            str(ssh_port),
+            "-i",
+            SSH_KEY,
+            f"root@{ssh_ip}",
+            f"tar -xzf {_sh_quote(remote_tar)} -C {_sh_quote(REMOTE_PROJECT_PATH)}",
+        ],
+        check=True,
+    )
+
+
+def _default_remote_run_script() -> str:
+    """
+    Default remote script for early development.
+
+    It is intentionally safe:
+    - installs requirements if present;
+    - runs syntax checks;
+    - runs pilot generation/visualization only if those scripts exist;
+    - bundles useful outputs if present.
+
+    Override with REMOTE_RUN_CMD for training/evaluation runs.
+    """
+    custom_cmd = os.getenv("REMOTE_RUN_CMD", "").strip()
+    if custom_cmd:
+        run_body = custom_cmd
+    else:
+        run_body = r"""
+echo "Project files:"
+find . -maxdepth 3 -type f | sort | sed -n '1,120p'
+
+echo ""
+echo "Python version:"
+python3 --version
+
+echo ""
+echo "GPU status:"
+nvidia-smi || true
+
+echo ""
+echo "Installing dependencies..."
+python3 -m pip install -U pip
+if [ -f requirements.txt ]; then
+    python3 -m pip install -r requirements.txt
+else
+    python3 -m pip install -U numpy pandas pillow opencv-python pyyaml matplotlib tqdm scikit-image ultralytics
+fi
+
+echo ""
+echo "Syntax checking Python files..."
+python3 -m compileall -q . || true
+
+echo ""
+echo "Running pilot dataset generator if available..."
+if [ -f scripts/03_generate_synthetic.py ] && [ -f configs/pilot.yaml ]; then
+    python3 -u scripts/03_generate_synthetic.py --config configs/pilot.yaml 2>&1 | tee generate_synthetic.log
+else
+    echo "Skipping generation: scripts/03_generate_synthetic.py or configs/pilot.yaml not found."
+fi
+
+echo ""
+echo "Creating contact sheets if visualization script exists..."
+if [ -f scripts/04_visualize_samples.py ]; then
+    python3 -u scripts/04_visualize_samples.py 2>&1 | tee visualize_samples.log || true
+else
+    echo "Skipping visualization: scripts/04_visualize_samples.py not found."
+fi
+
+echo ""
+echo "Listing generated outputs..."
+find data/synthetic outputs -maxdepth 4 -type f 2>/dev/null | sort | sed -n '1,200p' || true
+"""
+
+    exports = []
+    # Add future API keys here if needed, but avoid uploading .env itself.
+    for key in ["HF_TOKEN", "WANDB_API_KEY"]:
+        val = os.getenv(key, "").strip()
+        if val:
+            exports.append(f"export {key}={_sh_quote(val)}")
+
+    script = (
+        "set -euo pipefail\n"
+        f"cd {_sh_quote(REMOTE_PROJECT_PATH)}\n"
+        "export PYTHONUNBUFFERED=1\n"
+        "export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True\n"
+        + ("\n".join(exports) + "\n" if exports else "")
+        + run_body
+        + r"""
+
+echo ""
+echo "Bundling artifacts..."
+tar -czf /tmp/drone_stress_artifacts.tgz \
+    README.md \
+    configs \
+    data/synthetic \
+    outputs \
+    *.log \
+    2>/dev/null || tar -czf /tmp/drone_stress_artifacts.tgz *.log 2>/dev/null || true
+"""
+    )
+    return script
+
+
+def _run_remote_script(ssh_ip: str, ssh_port: str, remote_run_script: str) -> None:
+    """Run a bash script on the pod via stdin."""
+    try:
+        script_bytes = remote_run_script.replace("\r\n", "\n").encode("utf-8")
+        subprocess.run(
+            [
+                "ssh",
+                *SSH_COMMON_OPTS,
+                "-p",
+                str(ssh_port),
+                "-i",
+                SSH_KEY,
+                f"root@{ssh_ip}",
+                "bash",
+                "-s",
+            ],
+            input=script_bytes,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Remote script failed with exit status {e.returncode}.") from None
+
+
+def _download_artifacts(ssh_ip: str, ssh_port: str) -> None:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    local_tar = f"runpod_drone_results_{ts}.tgz"
+
+    print(f"Downloading artifacts to {local_tar}...")
+    subprocess.run(
+        [
+            "scp",
+            *SSH_COMMON_OPTS,
+            "-P",
+            str(ssh_port),
+            "-i",
+            SSH_KEY,
+            f"root@{ssh_ip}:/tmp/drone_stress_artifacts.tgz",
+            local_tar,
+        ],
+        check=True,
+    )
+    print(f"Artifacts saved: {local_tar}")
+
+
+def run_remote_job() -> None:
+    if not runpod.api_key:
+        raise RuntimeError("RUNPOD_API_KEY is not set.")
+    if not POD_ID:
+        raise RuntimeError("RUNPOD_POD_ID is not set. Put the NEW pod id in .env.")
+
+    print(f"Starting/resuming pod: {POD_ID}")
+
+    for attempt in range(30):
+        try:
+            runpod.resume_pod(POD_ID, GPU_COUNT)
+            break
+        except Exception as e:
+            msg = str(e)
+            if "CERTIFICATE_VERIFY_FAILED" in msg or "SSLCertVerificationError" in msg:
+                print("RunPod API TLS verify failed locally; enabling insecure SSL verify and retrying...")
+                _enable_insecure_runpod_api_ssl_verify()
+                continue
+            if "not enough free gpus" in msg.lower():
+                print(f"Attempt {attempt + 1}: no free GPUs on host. Retrying in 20s...")
+                time.sleep(20)
+                continue
+            raise
+
+    print("Waiting for pod runtime metadata...")
+    pod = None
+    for _ in range(40):
+        pod = runpod.get_pod(POD_ID)
+        if isinstance(pod, dict) and pod.get("runtime"):
+            break
+        time.sleep(5)
+
+    ssh_ip, ssh_port = _resolve_ssh_target_from_runtime(pod)
+    _wait_for_ssh(
+        ssh_ip,
+        ssh_port,
+        timeout_s=int(os.getenv("SSH_WAIT_TIMEOUT_S", "420")),
+    )
+
+    try:
+        _upload_project_snapshot(ssh_ip, ssh_port)
+        remote_run_script = _default_remote_run_script()
+        _run_remote_script(ssh_ip, ssh_port, remote_run_script)
+        _download_artifacts(ssh_ip, ssh_port)
+
+    except Exception as e:
+        print(f"Error during remote execution: {e}")
+        raise
+
+    finally:
+        if STOP_POD:
+            print("Stopping pod to save costs...")
+            try:
+                runpod.stop_pod(POD_ID)
+                print("Stop command sent successfully.")
+            except Exception as e:
+                print(f"FAILED to stop pod via API: {e}")
+                print("WARNING: go to the RunPod dashboard and stop it manually.")
+        else:
+            print("Leaving pod running because STOP_POD=0.")
+
+
+if __name__ == "__main__":
+    run_remote_job()

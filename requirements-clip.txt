@@ -1,0 +1,4 @@
+# Optional: CLIP-assisted scene filter (--use-clip in scripts/06_filter_flying_object_scenes.py)
+transformers>=4.36
+torch>=2.0
+pillow>=10.0

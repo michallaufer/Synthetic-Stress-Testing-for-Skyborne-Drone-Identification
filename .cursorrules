@@ -1,0 +1,550 @@
+# Cursor Rules — Synthetic Stress Testing for Skyborne Drone Identification
+
+You are helping implement a research codebase for a computer-vision / generative-AI project:
+
+Synthetic Stress Testing for Skyborne Drone Identification
+
+The project builds a controlled synthetic benchmark for measuring drone-identification robustness under object size, apparent distance, blur, Gaussian noise, background clutter, lighting, and hard-negative distractors.
+
+The main goal is not just standard object detection mAP. The main goal is to estimate model identification boundaries and false-identification behavior.
+
+---
+
+## 1. Core Research Logic
+
+Always preserve the central research framing:
+
+- This is not a generic drone-detection dataset project.
+- Existing datasets are used as source pools, not as the main contribution.
+- The contribution is a controlled synthetic stress-test benchmark.
+- The benchmark must include metadata for every generated image.
+- Experiments should report identification percentage, false-identification percentage, robustness curves, and boundary thresholds.
+
+Do not change this framing unless explicitly asked.
+
+---
+
+## 2. Main Benchmark Question
+
+The project asks:
+
+Under what visual conditions can different models still identify a drone, and when do they fail or confuse hard negatives as drones?
+
+Important controlled variables:
+
+- object_size_px
+- apparent distance / distance_bin
+- gaussian_noise_sigma
+- blur_level
+- background_type
+- lighting
+- contrast / haze
+- distractor_type
+- target_present
+- difficulty
+
+---
+
+## 3. Dataset Philosophy
+
+Large public datasets must not be used blindly.
+
+Treat datasets as candidate pools:
+
+- drone datasets provide drone crops, real validation examples, and optional training data.
+- background datasets provide candidate background images.
+- distractor datasets provide hard-negative assets.
+
+Before using images, filter or curate them.
+
+For backgrounds, prefer sky-dominant or aerial-relevant scenes:
+
+- clean_sky
+- partial_cloud
+- overcast_hazy
+- urban_skyline
+- trees_sky
+- rooftop_antenna_sky
+- horizon_hills
+- cluttered_low_altitude
+- aerial_view
+
+Do not assume BDD100K or ADE20K images are relevant without filtering.
+
+---
+
+## 4. Background Filtering Rules
+
+When implementing background filtering, prefer measurable criteria:
+
+- sky_ratio
+- largest_connected_sky_component_ratio
+- valid paste region size
+- time of day / weather metadata when available
+- indoor / tunnel / irrelevant-scene rejection
+- optional dominant-object rejection
+- manual thumbnail review support
+
+Suggested first-version thresholds:
+
+- keep if sky_ratio >= 0.30
+- largest connected sky component >= 0.15 of image area
+- valid sky patch >= 128x128 px
+- reject indoor/tunnel/night unless explicitly testing night
+- allow sky_ratio >= 0.20 only for challenge backgrounds
+
+Separate background subsets:
+
+- clean benchmark backgrounds
+- low-altitude realistic backgrounds
+- hard challenge backgrounds
+
+Do not mix all background types into one metric without reporting per-background results.
+
+---
+
+## 5. Synthetic Dataset Subsets
+
+The synthetic benchmark should support three main subsets:
+
+1. drone_positive
+   - drone is present
+   - used for identification percentage
+
+2. hard_negative
+   - no drone is present
+   - contains distractor object or visual artifact
+   - used for false-identification percentage
+
+3. mixed_challenge
+   - drone plus distractor or clutter
+   - used for confusion and robustness analysis
+
+Keep these subset names consistent where possible.
+
+---
+
+## 6. Metadata Is Mandatory
+
+Every generated image must have a metadata row.
+
+Metadata must be saved in a machine-readable format, preferably:
+
+- metadata.csv
+- optionally metadata.jsonl
+
+Every row should include at least:
+
+- image_id
+- split
+- subset
+- target_present
+- target_class
+- distractor_classes
+- background_source
+- background_type
+- object_size_px
+- distance_bin
+- gaussian_noise_sigma
+- blur_level
+- contrast_level
+- lighting
+- difficulty
+- bbox
+- asset_id
+- seed
+
+For hard negatives:
+
+- target_present must be false
+- target_class should be none
+- distractor_classes should list the distractor class
+- bbox may refer to the distractor location
+
+Do not generate images without metadata.
+
+---
+
+## 7. Label Format
+
+Support YOLO-format labels for detector training/evaluation.
+
+YOLO labels should be saved separately from metadata.
+
+For drone-positive images:
+
+- save class id for drone
+- save normalized center_x, center_y, width, height
+
+For hard-negative images:
+
+- usually save an empty label file if training binary drone detection
+- metadata should still record distractor bbox and class
+
+Be explicit in the code whether distractors are labeled for multiclass training or only stored in metadata.
+
+Default benchmark mode:
+
+- binary drone vs non-drone identification
+
+Optional later ablation:
+
+- multiclass hard-negative training
+
+---
+
+## 8. Identification Success Rule
+
+For tiny objects, standard IoU can be unstable.
+
+Primary success rule:
+
+correct if predicted class is drone and predicted center is within:
+
+max(5 px, 0.5 * object_diameter)
+
+of the ground-truth center.
+
+Optional supplementary metric:
+
+IoU >= 0.3
+
+Do not use IoU >= 0.5 as the only metric for tiny drones unless explicitly requested.
+
+---
+
+## 9. Metrics To Implement
+
+Prioritize these metrics:
+
+- identification_percentage
+- false_identification_percentage
+- boundary_80
+- boundary_50
+- boundary_20
+- false_identification_by_distractor
+- identification_by_background_type
+- identification_by_size
+- identification_by_noise
+- identification_by_blur
+- robustness curves
+- size x noise heatmaps
+- size x blur heatmaps
+- background x size heatmaps
+
+Avoid reporting only mAP. mAP may be included but is not the main research result.
+
+---
+
+## 10. Model Plan
+
+Initial models:
+
+- YOLOv8 or YOLO11
+- Grounding DINO
+- RT-DETR, optional
+
+Optional simple baseline:
+
+- blob / small-object detector
+
+Keep model code modular so new models can be added later.
+
+---
+
+## 11. Hard-Negative Mining Logic
+
+Hard-negative mining loop:
+
+1. train or run initial detector
+2. evaluate on hard-negative images
+3. collect false positives
+4. categorize false positives by distractor/background/size
+5. generate targeted variants around the false positives
+6. retrain or fine-tune
+7. compare false-identification rates before and after
+
+The goal is to reduce false drone identifications without destroying true drone identification.
+
+---
+
+## 12. Implementation Style
+
+Write clean, reproducible research code.
+
+Prefer:
+
+- config-driven scripts
+- YAML configs
+- deterministic random seeds
+- explicit input/output paths
+- small pilot runs before large runs
+- clear function names
+- progress bars for long loops
+- saved logs
+- contact sheets for visual inspection
+- minimal dependencies at first
+- modular functions over large monolithic scripts
+
+Avoid:
+
+- hardcoded absolute local paths
+- silent failures
+- hidden global state
+- untracked generated outputs
+- changing research definitions without updating README
+- downloading huge datasets automatically without confirmation
+- training before visual sanity checks
+
+---
+
+## 13. Repository Structure
+
+Prefer this structure:
+
+drone-stress-benchmark/
+  README.md
+  .cursorrules
+  requirements.txt
+  run_gpu.py
+
+  configs/
+    pilot.yaml
+
+  data/
+    raw/
+      backgrounds/
+      drones/
+      distractors/
+
+    processed/
+      backgrounds_curated/
+      assets_drone/
+      assets_distractors/
+
+    synthetic/
+      pilot/
+        images/
+        labels/
+        metadata.csv
+
+  scripts/
+    01_filter_backgrounds.py
+    02_extract_assets.py
+    03_generate_synthetic.py
+    04_visualize_samples.py
+    05_evaluate_predictions.py
+
+  notebooks/
+    01_dataset_sanity_check.ipynb
+
+  outputs/
+    contact_sheets/
+    figures/
+    reports/
+
+Keep this structure updated if files are moved or renamed.
+
+---
+
+## 14. README Maintenance
+
+README.md is the source of truth for the project.
+
+Whenever you add or change:
+
+- repository structure
+- scripts
+- configs
+- dataset paths
+- metadata fields
+- label format
+- metrics
+- model commands
+- experiment results
+- RunPod usage
+
+update README.md.
+
+Do not let the README become stale.
+
+---
+
+## 15. RunPod / GPU Workflow
+
+The project may use a RunPod launcher script.
+
+Important assumptions:
+
+- local development happens in Cursor
+- GPU execution happens on a RunPod pod
+- the launcher uploads a local repo snapshot
+- the pod runs a configured command
+- artifacts are downloaded
+- the pod should stop by default to save money
+
+Do not hardcode old project names, old pod IDs, or old clinical-NLP paths.
+
+Use environment variables when possible:
+
+- RUNPOD_API_KEY
+- RUNPOD_POD_ID
+- RUNPOD_SSH_IP
+- RUNPOD_SSH_PORT
+- SSH_KEY
+- REMOTE_PROJECT_PATH
+- REMOTE_RUN_CMD
+- STOP_POD
+- UPLOAD_DATA
+
+Never upload .env files or secrets to the pod.
+
+---
+
+## 16. Data Safety and Large Files
+
+Do not commit large datasets, generated synthetic datasets, model checkpoints, or downloaded archives to Git.
+
+Use .gitignore for:
+
+- data/raw/
+- data/processed/
+- data/synthetic/
+- outputs/
+- runs/
+- weights/
+- models/
+- checkpoints/
+- *.pt
+- *.pth
+- *.onnx
+- *.safetensors
+- *.zip
+- *.tar
+- *.tar.gz
+- *.tgz
+
+Small example files may be allowed only if explicitly useful and lightweight.
+
+---
+
+## 17. First Implementation Priority
+
+The first milestone is not training.
+
+The first milestone is:
+
+Generate a tiny synthetic pilot dataset with correct images, labels, metadata, and contact sheets.
+
+Target pilot:
+
+- 10-50 backgrounds
+- 5-20 drone assets
+- 5-20 distractor assets
+- 100-300 generated images
+
+Pilot variables:
+
+- sizes: 8, 15, 30, 60 px
+- noise: 0, 10, 20
+- blur: none, mild
+- backgrounds: clean_sky, cloudy_sky, urban_skyline, trees_sky
+- distractors: bird, airplane, kite, cloud_blob
+
+Outputs:
+
+- data/synthetic/pilot/images/
+- data/synthetic/pilot/labels/
+- data/synthetic/pilot/metadata.csv
+- outputs/contact_sheets/
+
+Only after visual sanity checks should model training/evaluation begin.
+
+---
+
+## 18. Coding Conventions
+
+Use Python 3.10+.
+
+Prefer libraries:
+
+- pathlib
+- dataclasses where helpful
+- numpy
+- pandas
+- opencv-python
+- pillow
+- pyyaml
+- tqdm
+- matplotlib
+- ultralytics when training YOLO
+
+For scripts:
+
+- use argparse
+- expose --config
+- print clear status messages
+- fail loudly when required paths are missing
+- create output directories automatically
+- save intermediate metadata
+- support small dry runs when useful
+
+Use type hints for nontrivial functions.
+
+---
+
+## 19. Visual Sanity Checks
+
+Every synthetic generation script should support visual review.
+
+Create contact sheets showing:
+
+- generated image
+- bbox overlay
+- subset
+- object size
+- noise level
+- blur level
+- background type
+- distractor type if present
+
+Do not trust generated data without looking at samples.
+
+---
+
+## 20. Important Research Cautions
+
+Be careful with claims.
+
+Do not claim:
+
+- no drone datasets exist
+- synthetic data alone proves real-world performance
+- BDD100K/ADE20K are drone datasets
+- clean-sky results generalize to low-altitude clutter
+- mAP alone answers the research question
+
+Prefer claims like:
+
+- existing datasets are used as source pools
+- the contribution is controlled boundary analysis
+- results are reported by condition
+- synthetic benchmark results are validated with a small real subset when possible
+- hard negatives are used to study false drone identification
+
+---
+
+## 21. When Unsure
+
+When implementing, prefer the simplest version that preserves the research logic.
+
+Small correct pilot > large messy pipeline.
+
+Before adding complexity, ask:
+
+- Does this help measure identification boundaries?
+- Does this improve control or metadata?
+- Does this help false-positive analysis?
+- Does this keep the project feasible?
+
+If not, do not add it yet.

@@ -1,39 +1,59 @@
-# --- Project Specifics (Drone Identification) ---
-data/
+# --- Project data and generated outputs (do not commit large files) ---
+data/raw/**
+!data/raw/README.md
+!data/raw/**/
+!data/raw/**/.gitkeep
+
+data/processed/
+data/synthetic/
+outputs/**
+!outputs/**/
+!outputs/**/.gitkeep
+
+runs/
+weights/
+models/
+checkpoints/
+
+# Legacy paths
 output/
 images/
 temp/
+synthetic_data/
+datasets/
+
+# --- Secrets ---
 .env
 
-# --- Machine Learning & Large Models ---
+# --- Machine Learning weights ---
 *.pt
 *.pth
 *.ckpt
 *.bin
 *.onnx
-# Ignore large dataset folders
-datasets/
-synthetic_data/
+*.safetensors
+*.zip
+*.tar
+*.tar.gz
+*.tgz
 
-# --- Standard Python / Environments ---
+# --- Python ---
 venv/
 .venv/
 env/
 __pycache__/
-*.py[codz]
+*.py[cod]
 *$py.class
 *.so
-
-# Distribution / packaging
 .Python
 build/
 dist/
 *.egg-info/
 
-# Jupyter Notebook
+# --- Jupyter ---
 .ipynb_checkpoints
 
-# IDEs (VS Code / Cursor / PyCharm)
+# --- IDEs ---
 .vscode/
 .idea/
 .cursor/

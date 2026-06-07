@@ -1,0 +1,76 @@
+# Pilot synthetic dataset configuration
+# See README.md for research framing and variable definitions.
+
+split: pilot
+seed: 42
+
+input:
+  backgrounds_dir: data/raw/backgrounds
+
+  # Foreground asset source: raw (toy debugging) or processed (intended interface).
+  # Current processed assets use threshold extraction only — integration testing, not final quality.
+  asset_source: processed
+
+  raw:
+    drones_dir: data/raw/drones
+    distractors_dir: data/raw/distractors
+
+  processed:
+    drones_dir: data/processed/assets_drone
+    distractors_dir: data/processed/assets_distractors
+
+output:
+  images_dir: data/synthetic/pilot/images
+  labels_dir: data/synthetic/pilot/labels
+  metadata_csv: data/synthetic/pilot/metadata.csv
+
+generation:
+  num_images: 150
+  image_width: 640
+  image_height: 640
+  # uniform_by_file: each background file equally likely (types with more files appear more often).
+  # balanced_by_type: sample background_type uniformly, then a file within that type.
+  background_sampling: balanced_by_type
+  # Fractions must sum to 1.0
+  subset_ratios:
+    drone_positive: 0.50
+    hard_negative: 0.30
+    mixed_challenge: 0.20
+
+variables:
+  drone_size_px: [8, 15, 30, 60]
+  gaussian_noise_sigma: [0, 10, 20]
+  blur_level: [none, mild]
+  background_types:
+    - clean_sky
+    - cloudy_sky
+    - urban_skyline
+    - trees_sky
+  distractor_types:
+    - bird
+    - airplane
+    - kite
+    - cloud_blob
+
+blur:
+  none: 0
+  mild: 3
+
+classes:
+  drone: 0
+
+yolo:
+  # Distractor bboxes are stored in metadata only (binary drone identification mode).
+  label_distractors: false
+
+paste:
+  # Paste objects in the upper fraction of the image (sky-dominated region).
+  sky_region_top_fraction: 0.75
+  margin_px: 8
+
+distance_bins:
+  # Map max object dimension (px) to apparent distance label.
+  near: 60
+  mid: 30
+  far: 15
+  very_far: 0
