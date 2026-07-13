@@ -1,17 +1,9 @@
 # Final report
 
-Place the formal PDF here when ready:
+- Short project overview: root [`README.md`](../README.md)
+- Final-clean metrics narrative: [`final_clean_experiment_results.md`](final_clean_experiment_results.md)
+- Long pipeline / CLI guide (archived former README): [`pipeline_guide.md`](pipeline_guide.md)
+- GitHub vs Drive policy: [`github_vs_drive.md`](github_vs_drive.md)
 
-```text
-docs/final_report.pdf
-```
+Place `final_report.pdf` here when available.
 
-Markdown sources already in this folder:
-
-| File | Role |
-|------|------|
-| `final_clean_experiment_results.md` | Final-clean Colab metrics + interpretation |
-| `methodology_notes.md` | Same experiment notes (alias for slides/report drafting) |
-| `github_vs_drive.md` | What belongs on GitHub vs Drive |
-
-Root `README.md` remains the project overview and pipeline guide.

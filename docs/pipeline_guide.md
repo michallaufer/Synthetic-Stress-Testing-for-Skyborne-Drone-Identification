@@ -1,0 +1,2491 @@
+﻿# Pipeline guide (archived full README)
+
+This file preserves the long operational README that previously lived at the repository root.
+For the short project overview, see the root `README.md`.
+
+---
+# Synthetic Stress Testing for Skyborne Drone Identification
+
+A controlled computer-vision benchmark for measuring **identification boundaries** of drone-detection models under synthetic visual stress.
+
+Instead of asking only â€œCan a model detect drones?â€, this project asks:
+
+> Under what visual conditions does a model stop identifying a drone, and when does it confuse hard negatives such as birds, planes, kites, balloons, clouds, or artifacts as drones?
+
+---
+
+## Repository layout (GitHub)
+
+```text
+â”œâ”€â”€ README.md / requirements*.txt / .gitignore / run_gpu.ipynb
+â”œâ”€â”€ code/
+â”‚   â”œâ”€â”€ notebooks/colab_training_final_clean.ipynb
+â”‚   â”œâ”€â”€ code/scripts/          # 01â€“05 pipeline + eval/ train/ utils/ adapters/
+â”‚   â””â”€â”€ src/drone_stress/ # Python package
+â”œâ”€â”€ configs/              # full_curated_v1, evaluation, training_yolo, training_rtdetr, â€¦
+â”œâ”€â”€ data/                 # README + samples + dataset_links (full data on Drive)
+â”œâ”€â”€ results/              # Published metrics, training logs, prediction CSVs (no weights)
+â”œâ”€â”€ visuals/              # Key plots + example predictions
+â”œâ”€â”€ slides/               # final_presentation.pptx (+ PDF when available)
+â””â”€â”€ docs/                 # Experiment write-up, methodology, GitHub vs Drive
+```
+
+**Run scripts from the repo root**, e.g. `python code/scripts/03_generate_synthetic.py --config configs/full_curated_v1.yaml`.
+
+**GitHub vs Drive:** commit code, configs, and small result tables. Do **not** commit model weights (`*.pt`), full synthetic images, or raw/processed asset pools. Details: [`docs/github_vs_drive.md`](docs/github_vs_drive.md). Fill Drive URLs in [`data/dataset_links.md`](data/dataset_links.md).
+
+**Authoritative Colab metrics:** [`results/combined_metrics/summary_by_model_by_eval_subset_CORRECTED.csv`](results/combined_metrics/summary_by_model_by_eval_subset_CORRECTED.csv)
+
+---
+
+## Project Goal
+
+This project builds a controlled synthetic benchmark for **skyborne drone identification**.
+
+The benchmark systematically varies:
+
+- drone size in pixels,
+- apparent distance,
+- Gaussian noise,
+- blur,
+- haze / contrast,
+- background type,
+- lighting,
+- hard-negative distractor type.
+
+The main output is not only mAP, but **robustness boundaries**:
+
+- 80% identification boundary,
+- 50% identification boundary,
+- 20% identification boundary,
+- false identification rate by distractor type.
+
+---
+
+## Research Question
+
+**How do different computer-vision models behave when drone identification becomes visually difficult?**
+
+Specifically:
+
+1. At what object size does each model fail?
+2. How much noise or blur can each model tolerate?
+3. Which backgrounds make identification harder?
+4. Which distractors are most often confused as drones?
+5. Does hard-negative mining reduce false drone identifications?
+
+---
+
+## Why This Is Not a Standard Drone Dataset Project
+
+Many drone datasets already exist.
+
+This project does **not** claim that drone datasets are unavailable. Instead, the contribution is a **controlled stress-testing benchmark** where visual conditions are explicitly known and varied.
+
+Existing datasets are used as source pools for:
+
+- real drone crops,
+- real validation images,
+- background candidates,
+- distractor candidates.
+
+The main contribution is the controlled benchmark construction and boundary analysis.
+
+---
+
+## Planned Dataset Structure
+
+The benchmark will contain four dataset groups.
+
+### 1. Real Drone Source Dataset
+
+Used for:
+
+- extracting drone crops,
+- training baseline detectors,
+- validating synthetic results on real images.
+
+Candidate sources:
+
+- Seraphim Drone Detection Dataset
+- Anti-UAV / Anti-UAV300
+- other inspected drone datasets if useful
+
+### 2. Curated Background Bank
+
+Large datasets are treated as candidate pools, not used directly.
+
+Backgrounds are filtered into categories such as:
+
+- clean sky,
+- cloudy / hazy sky,
+- urban skyline,
+- trees + sky,
+- rooftops / antennas + sky,
+- horizon / hills,
+- cluttered low-altitude challenge scenes,
+- aerial-view backgrounds.
+
+Candidate sources:
+
+- sky / cloud datasets,
+- ADE20K outdoor sky subset,
+- curated BDD100K skyline subset,
+- SkyScenes for aerial-view scenarios,
+- own photos if needed.
+
+### 3. Distractor Asset Bank
+
+Used to create hard-negative and mixed-challenge images.
+
+Distractor classes:
+
+- bird,
+- airplane,
+- helicopter,
+- kite,
+- balloon,
+- cloud blob,
+- insect near lens,
+- lens dirt,
+- glare / bright spot,
+- antenna / pole / tower tip.
+
+Candidate sources:
+
+- Open Images,
+- COCO,
+- bird / aircraft datasets,
+- cloud segmentation datasets,
+- procedural generation for artifacts.
+
+### 4. Synthetic Benchmark Dataset
+
+Generated by controlled compositing.
+
+Subsets:
+
+- drone-positive images,
+- hard-negative images with no drone,
+- mixed challenge images with drone + distractor.
+
+Each generated image must have:
+
+- image file,
+- YOLO label file when relevant,
+- metadata row,
+- generation parameters.
+
+---
+
+## Implementation Roadmap (Pilot â†’ Full Pipeline)
+
+This repository currently contains a **toy pilot (minimum working prototype)** to validate:
+
+- config-driven controlled compositing,
+- correct YOLO label formatting (binary drone vs non-drone),
+- mandatory per-image metadata,
+- visual sanity checks (contact sheets).
+
+Planned next steps:
+
+### In progress: dataset-derived foreground assets
+
+**Toy folder mode (debug only):** `code/scripts/02_extract_assets.py folder` applies **threshold background removal** to manual `data/raw/*` crops. Output is blurry/rectangular â€” **do not train** on these assets.
+
+**Annotation bbox mode (bridge):** the same script accepts a dataset **annotations CSV** and crops each bbox to an RGBA PNG (`extraction_method=bbox_crop`, `needs_sam2_refinement=True`). This is the intended path from real detection datasets toward the asset pool.
+
+**Next: SAM2 mask extraction:** annotate mode supports `--use-sam2` for box-prompted alpha masks (`extraction_method=sam2_mask`). See `src/drone_stress/sam2_extract.py`.
+
+### Future: dataset-derived asset pipeline
+
+- Pool assets from multiple public datasets via annotation CSVs + `source_dataset` in `asset_metadata.csv`.
+- Background filtering/curation (sky ratio, valid paste region, category balancing).
+- License/attribution fields in metadata.
+
+### Optional future: FLUX / diffusion harmonization
+
+- Optionally post-process composites with diffusion-based harmonization to improve realism.
+- Keep harmonization **optional** and record whether it was applied in metadata so analyses can be stratified by realism stage.
+
+Model training/evaluation is intentionally deferred until the above sanity checks remain stable.
+
+---
+
+## Background Filtering Strategy
+
+Large background datasets are filtered before use.
+
+A background is kept only if it has a plausible drone-placement region.
+
+**Implemented:** `code/scripts/01_filter_backgrounds.py` runs a **heuristic first pass**, then optional **CLIP-assisted relabeling** (`--use-clip`). CLIP is a **weak relabeling signal**, not ground truth â€” **contact-sheet QA is required** before compositing.
+
+- **Heuristic output:** `data/processed/backgrounds_curated/`
+- **V1 CLIP merge output** (with `--use-clip`): `data/processed/backgrounds_approved/`, `backgrounds_holdout/`, `backgrounds_review/`, `backgrounds_reject/`
+
+**First benchmark:** use only **`approved_daytime`** backgrounds from the V1 folders below.  
+**Holdout:** `night_low_light` is stored separately under `backgrounds_holdout/` for a future low-light robustness axis â€” do not mix into the first daytime benchmark.
+
+### V1 approved daytime category names
+
+Legacy heuristic/CLIP names are mapped internally; **output folders and metadata use these clearer names:**
+
+| V1 category | Meaning |
+|-------------|---------|
+| `clear_upper_sky` | Mostly clear visible upper sky; not necessarily pure sky-only; may include some lower scenery |
+| `cloudy_sky` | Visible sky dominated by clouds or overcast conditions |
+| `sky_with_natural_landscape` | Sky with natural lower scenery (trees, hills, mountains, vegetation, snow slopes) |
+| `sky_with_built_environment` | Sky with built lower structures (buildings, roads, rooftops, plazas, beach promenade, parking lots) |
+
+**Holdout:** `night_low_light` â€” outdoor night/dusk/low-light scenes, valuable for later robustness experiments.
+
+**Horizon is not a primary V1 category.** Horizon scenes are absorbed into the nearest approved category when possible (`clear_upper_sky`, `cloudy_sky`, `sky_with_natural_landscape`, or `sky_with_built_environment`); weak/ambiguous horizon cases go to `review`.
+
+**Legacy label mapping (internal only):** `clean_sky` â†’ `clear_upper_sky`; `trees_sky` / `sky_with_trees` â†’ `sky_with_natural_landscape`; `urban_skyline` / `sky_with_buildings` â†’ `sky_with_built_environment`.
+
+### SkyFinder background pipeline
+
+Download the SkyFinder subset locally (user-managed, not committed to Git):
+
+```text
+C:\datasets\backgrounds\skyfinder_raw
+```
+
+**Step 1 â€” Heuristic pre-filter:**
+
+```bash
+python code/scripts/01_filter_backgrounds.py \
+  --input-dir C:\datasets\backgrounds\skyfinder_raw \
+  --output-dir data/processed/backgrounds_curated \
+  --mode copy \
+  --recursive \
+  --make-contact-sheets \
+  --seed 42
+```
+
+**Step 2 â€” CLIP-assisted V1 relabeling (recommended after heuristic QA):**
+
+Install optional deps:
+
+```bash
+pip install -r requirements-clip.txt
+```
+
+```bash
+python code/scripts/01_filter_backgrounds.py \
+  --input-dir C:\datasets\backgrounds\skyfinder_raw \
+  --mode copy \
+  --recursive \
+  --use-clip \
+  --v1-output-root C:\datasets\backgrounds\v1_outputs \
+  --clip-model openai/clip-vit-base-patch32 \
+  --clip-device auto \
+  --clip-batch-size 16 \
+  --make-contact-sheets \
+  --seed 42
+```
+
+On Windows, prefer `--v1-output-root` with a short path to avoid `MAX_PATH` copy errors. Copy failures are logged, retained in metadata (`copy_success`, `copy_error`), and do not stop the run.
+
+Relabel from existing heuristic metadata (skip re-scan):
+
+```bash
+python code/scripts/01_filter_backgrounds.py \
+  --relabel-existing-metadata data/processed/backgrounds_curated/background_metadata.csv \
+  --mode copy \
+  --use-clip \
+  --make-contact-sheets
+```
+
+Pilot / dry run (random sample):
+
+```bash
+python code/scripts/01_filter_backgrounds.py \
+  --input-dir C:\datasets\backgrounds\skyfinder_raw \
+  --mode copy \
+  --recursive \
+  --use-clip \
+  --make-contact-sheets \
+  --max-images 1000 \
+  --seed 42
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--input-dir` | Candidate background pool |
+| `--output-dir` | Heuristic-only curated root (`backgrounds_curated`; ignored when `--use-clip`) |
+| `--mode` | `copy` (default) or `symlink` |
+| `--recursive` | Search subfolders for `jpg`, `jpeg`, `png`, `webp` |
+| `--make-contact-sheets` | Per-category PNG grids under `outputs/contact_sheets/` |
+| `--max-images` | Optional random sample cap (uses `--seed`) |
+| `--seed` | Random seed for subsampling (default: `42`) |
+| `--use-clip` | Enable CLIP second-stage relabeling (not ground truth) |
+| `--clip-model` | Hugging Face CLIP id (default: `openai/clip-vit-base-patch32`) |
+| `--clip-device` | `auto`, `cpu`, `cuda`, or `mps` |
+| `--clip-margin-threshold` | Retained for API compat; V1 merge does not over-penalize low CLIP margin when heuristic is strong (default: `0.04`) |
+| `--clip-batch-size` | CLIP inference batch size (default: `16`) |
+| `--relabel-existing-metadata` | Relabel from existing `background_metadata.csv` |
+| `--v1-output-root` | V1 folder root (default: `data/processed`). Use a short absolute path on Windows to avoid MAX_PATH copy failures, e.g. `C:\datasets\backgrounds\v1_outputs` |
+| `--report-output` | Text summary (heuristic or CLIP report) |
+
+**Heuristic categories (first pass):** `clean_sky`, `cloudy_sky`, `trees_sky`, `urban_skyline`, `horizon`, `review`, `reject`.
+
+**V1 final categories:** `clear_upper_sky`, `cloudy_sky`, `sky_with_natural_landscape`, `sky_with_built_environment`, `night_low_light` (holdout), `review_ambiguous`, `reject_irrelevant`.
+
+**CLIP merge policy (V1 summary):**
+
+| Situation | Typical outcome |
+|-----------|-----------------|
+| Strong heuristic daytime + compatible CLIP | `approved_daytime` (low CLIP margin does not force review) |
+| Ambiguous heuristic + weak CLIP | `review` |
+| CLIP `night_low_light`, usable outdoor scene | `holdout_night` |
+| Almost black / corrupt / no visible scene | `reject` |
+| Heuristic reject but strong visible sky + CLIP daytime | salvage to `approved_daytime` |
+| Horizon scene | absorbed into nearest V1 daytime category, not a separate folder |
+
+**Outputs (heuristic):**
+
+| Path | Purpose |
+|------|---------|
+| `data/processed/backgrounds_curated/<category>/` | Heuristic copies |
+| `data/processed/backgrounds_curated/background_metadata.csv` | Heuristic features + labels |
+| `outputs/contact_sheets/background_<category>.png` | Heuristic QA sheets |
+| `outputs/reports/background_filter_report.txt` | Heuristic summary |
+
+**Outputs (CLIP / V1):**
+
+| Path | Purpose |
+|------|---------|
+| `data/processed/backgrounds_approved/<category>/` | Approved daytime copies (`clear_upper_sky`, `cloudy_sky`, `sky_with_natural_landscape`, `sky_with_built_environment`) |
+| `data/processed/backgrounds_holdout/night_low_light/` | Night/low-light holdout |
+| `data/processed/backgrounds_review/` | Ambiguous scenes for manual QA |
+| `data/processed/backgrounds_reject/` | Clearly unusable scenes |
+| `data/processed/backgrounds_v1_metadata.csv` | Global V1 metadata (all splits) |
+| `data/processed/backgrounds_approved/background_metadata_approved.csv` | Approved daytime subset only |
+| `outputs/contact_sheets/background_approved_<category>.png` | Approved category QA sheets |
+| `outputs/contact_sheets/background_holdout_night_low_light.png` | Holdout QA sheet |
+| `outputs/contact_sheets/background_review_sample.png` | Review sample |
+| `outputs/contact_sheets/background_reject_sample.png` | Reject sample |
+| `outputs/reports/background_filter_v1_report.txt` | V1 summary (counts by heuristic, CLIP, final, merge_reason) |
+
+**`backgrounds_v1_metadata.csv`** includes: `heuristic_background_type`, `heuristic_filter_status`, CLIP columns, `final_background_type`, `final_filter_status`, `final_use_split` (`approved_daytime` / `holdout_night` / `review` / `reject`), `merge_reason`, `semantic_category_notes`, sky feature columns.
+
+Review contact sheets before using curated backgrounds in synthetic generation. Do **not** treat heuristic or CLIP labels as ground truth.
+
+Planned future criteria (not all implemented yet):
+
+- largest connected sky component,
+- valid sky patch size,
+- metadata such as time of day / weather,
+- optional manual thumbnail review.
+
+Example categories (pilot generator uses a subset):
+
+```text
+clean_sky
+partial_cloud
+overcast_hazy
+urban_skyline
+trees_sky
+rooftop_antenna_sky
+horizon_hills
+cluttered_low_altitude
+aerial_view
+```
+
+---
+
+## Synthetic Generation Variables
+
+Planned controlled variables:
+
+drone_size_px: [8, 15, 30, 60]
+gaussian_noise_sigma: [0, 10, 20]
+blur_level: [none, mild, medium]
+background_type: [clean_sky, cloudy_sky, urban_skyline, trees_sky]
+distractor_type: [bird, airplane, kite, balloon, cloud_blob]
+
+Later extensions may include:
+
+drone_size_px: [3, 8, 15, 30, 60, 100]
+gaussian_noise_sigma: [0, 5, 10, 20, 30]
+blur_level: [none, mild, medium, strong]
+lighting: [day, dawn, dusk]
+distance_bin: [near, mid, far, very_far]
+
+---
+
+## Metadata Schema
+
+Every generated image should have a metadata record.
+
+Example (drone-positive):
+
+```json
+{
+  "image_id": "img_000001.png",
+  "split": "pilot",
+  "subset": "drone_positive",
+  "target_present": true,
+  "target_class": "drone",
+  "distractor_classes": [],
+  "background_source": "curated",
+  "background_type": "clean_sky",
+  "object_size_px": 30,
+  "distance_bin": "mid",
+  "gaussian_noise_sigma": 10,
+  "blur_level": "mild",
+  "contrast_level": "normal",
+  "lighting": "day",
+  "difficulty": "medium",
+  "bbox": [312, 184, 30, 24],
+  "asset_id": "drone_0007"
+}
+```
+
+For hard negatives:
+
+```json
+{
+  "image_id": "img_000250.png",
+  "split": "pilot",
+  "subset": "hard_negative",
+  "target_present": false,
+  "target_class": "none",
+  "distractor_classes": ["bird"],
+  "background_type": "partial_cloud",
+  "object_size_px": 15,
+  "gaussian_noise_sigma": 20,
+  "blur_level": "medium",
+  "difficulty": "hard_negative",
+  "bbox": [420, 200, 15, 10],
+  "asset_id": "bird_0012"
+}
+```
+
+Generated pilot rows are saved in `data/synthetic/pilot/metadata.csv`. JSON list fields are stored as JSON-encoded strings in the CSV.
+
+### Background labeling
+
+- **`background_type`** is derived from the **background file**, not chosen independently:
+  - If the file lives under `data/raw/backgrounds/<type>/`, `background_type` equals that folder name (`clean_sky`, `cloudy_sky`, `urban_skyline`, `trees_sky`).
+  - Loose files in `data/raw/backgrounds/` use a **controlled filename map** (e.g. `clear_sky.jpg` â†’ `clean_sky`) or `unknown`.
+- **`background_path`** and **`background_filename`** record the exact source file for audit.
+
+### Explicit object fields (required for QA)
+
+| Field | `drone_positive` | `hard_negative` | `mixed_challenge` |
+|-------|------------------|-----------------|-------------------|
+| `target_bbox` | drone box `[x,y,w,h]` | `[]` | drone box |
+| `target_asset_id` | drone asset id | `""` | drone asset id |
+| `distractor_bboxes` | `[]` | `[distractor box]` | `[distractor box]` |
+| `distractor_asset_ids` | `[]` | `[id]` | `[id]` |
+| `pasted_object_summary` | e.g. `drone:drone_001` | e.g. `distractor:bird:bird_01` | e.g. `drone:drone_001+distractor:kite:kite_02` |
+
+**Why separate boxes:** a single `bbox` field cannot represent mixed images (drone + distractor) or hard negatives unambiguously.
+
+### Legacy fields (backward compatibility)
+
+- **`bbox`** â€” primary object only (drone if present, else first distractor). Prefer `target_bbox` / `distractor_bboxes`.
+- **`asset_id`** â€” primary asset string. Prefer `target_asset_id` / `distractor_asset_ids`.
+
+Also recorded: `seed`, `foreground_asset_source` (`raw` or `processed` from config).
+
+---
+
+## Success Rule
+
+For detector models, a drone is considered correctly identified if:
+
+the predicted class is drone,
+confidence is above the selected threshold,
+the predicted location matches the ground truth.
+
+Primary location rule for tiny objects:
+
+correct if predicted center is within max(5 px, 0.5 Ã— object diameter) of the ground-truth center
+
+Optional supplementary rule:
+
+IoU >= 0.3
+
+The center-distance rule is preferred for very small drones, where standard IoU can be unstable.
+
+---
+
+## Metrics
+
+Primary metrics:
+
+- **Identification percentage** â€” correctly identified drone images / total drone-positive images
+- **False identification percentage** â€” hard-negative images predicted as drone / total hard-negative images
+
+### Boundary Thresholds
+
+For each model:
+
+80% identification boundary,
+50% identification boundary,
+20% identification boundary.
+
+### Robustness Curves
+
+Examples:
+
+identification percentage vs. drone size,
+identification percentage vs. noise level,
+identification percentage vs. blur level.
+
+### Heatmaps
+
+Examples:
+
+size Ã— noise,
+size Ã— blur,
+background type Ã— size.
+
+### Distractor Confusion
+
+False drone identification rate by distractor type:
+
+bird,
+airplane,
+helicopter,
+kite,
+balloon,
+cloud blob,
+artifact.
+
+---
+
+## Planned Models
+
+Initial models:
+
+YOLOv8 or YOLO11
+Grounding DINO
+RT-DETR, optional
+
+Optional baseline:
+
+simple blob / small-object detector
+
+---
+
+## Hard-Negative Mining Plan
+
+1. Train or run an initial drone detector.
+2. Evaluate it on hard-negative images.
+3. Collect false positives.
+4. Categorize the false positives by distractor type.
+5. Generate more synthetic variants of the confusing distractors.
+6. Retrain or fine-tune the model.
+7. Compare false identification rates before and after mining.
+
+Goal:
+
+Reduce false drone identifications without destroying true drone identification performance.
+
+---
+
+## First Minimal Pilot
+
+The first implementation goal is not the full benchmark.
+
+The first goal is:
+
+Generate a small synthetic dataset with correct images, labels, metadata, and visual sanity checks.
+
+Pilot target:
+
+50 backgrounds
+20 drone assets
+20 distractor assets
+100-300 synthetic images
+
+Pilot variables:
+
+sizes: 8, 15, 30, 60 px
+noise: 0, 10, 20
+blur: none, mild
+backgrounds: clean_sky, cloudy_sky, urban_skyline, trees_sky
+distractors: bird, airplane, kite, cloud_blob
+
+Pilot outputs:
+
+- `data/synthetic/pilot/images/`
+- `data/synthetic/pilot/labels/`
+- `data/synthetic/pilot/metadata.csv`
+- `outputs/contact_sheets/` (visual review)
+- `outputs/reports/` (text dataset summary)
+
+---
+
+## Repository Structure
+
+Current layout:
+
+```text
+Synthetic Stress Testing for Skyborne Drone Identification/
+  README.md
+  .cursorrules
+  requirements.txt
+  requirements-colab.txt
+  run_gpu
+  run_gpu.ipynb
+
+  configs/
+    pilot.yaml
+
+  src/
+    drone_stress/
+      __init__.py
+      config.py
+      assets.py
+      compositor.py
+      generate.py
+
+  data/
+    raw/
+      README.md
+      backgrounds/{clean_sky,cloudy_sky,urban_skyline,trees_sky}/
+      drones/
+      distractors/{bird,airplane,kite,cloud_blob}/
+
+    processed/
+      annotations/               # dataset annotation CSVs (e.g. Seraphim)
+      assets_drone/              # RGBA PNGs from 02_extract_assets.py
+      assets_distractors/<class>/
+      asset_metadata.csv         # per-run provenance (written by extractor)
+
+    synthetic/
+      pilot/
+        images/
+        labels/
+        metadata.csv
+
+  code/scripts/
+    adapters/
+      yolo_to_annotations.py          # generic multi-class YOLO (data.yaml)
+      seraphim_yolo_to_annotations.py # single-class drone shortcut
+    01_filter_backgrounds.py      # heuristic sky/horizon background curation
+    02_extract_assets.py          # folder (threshold) + annotate (bbox); SAM2 later
+    03_generate_synthetic.py      # pilot generator
+    04_visualize_samples.py       # contact sheets
+    05_dataset_summary.py         # metadata summary (sanity check)
+    06_filter_flying_object_scenes.py  # viewpoint filter for annotation rows
+    07_visualize_extracted_assets.py   # SAM2 extracted asset QA contact sheets
+    05_evaluate_predictions.py    # stub (future model evaluation; not training)
+
+  notebooks/
+
+  outputs/
+    contact_sheets/
+    figures/
+    reports/
+```
+
+---
+
+## Pilot Scripts (Current)
+
+| Script | Status | Purpose |
+|--------|--------|---------|
+| `01_filter_backgrounds.py` | **implemented** | Heuristic + optional CLIP background curation |
+| `adapters/yolo_to_annotations.py` | **implemented** | Multi-class YOLO (`data.yaml`) â†’ annotation CSV |
+| `adapters/seraphim_yolo_to_annotations.py` | **implemented** | Single-class Seraphim shortcut |
+| `adapters/coco_to_annotations.py` | **implemented** | COCO instances JSON â†’ distractor annotation CSV (legacy) |
+| `adapters/coco_hard_negative_images.py` | **implemented** | COCO val full images â†’ real hard negatives (recommended) |
+| `adapters/coco_sky_backgrounds.py` | **implemented** | COCO val sky-visible backgrounds for compositing |
+| `adapters/airbirds_inspect.py` | **implemented** | AirBirds chunk diversity audit (temporal + phash) |
+| `adapters/places365_highres_prepare_backgrounds.py` | **implemented** | Places365 val_large high-res background candidates |
+| `utils/clip_filter_places365_backgrounds.py` | **implemented** | CLIP suitability filter for Places365 candidates |
+| `utils/finalize_places365_clip_backgrounds.py` | **implemented** | Manual final approval manifest for Places365 backgrounds |
+| `utils/gpt_review_places365_backgrounds.py` | **implemented** | GPT-4o mini vision review for Places365 manifest |
+| `utils/visualize_gpt_review_decisions.py` | **implemented** | GPT review accept/reject QA contact sheets |
+| `utils/export_places365_final_accepts.py` | **implemented** | Export accepted Places365 backgrounds + metadata |
+| `utils/extract_manual_assets_sam2.py` | **implemented** | SAM2 extraction from unlabeled manual raw folders |
+| `utils/curate_extracted_assets.py` | **implemented** | Automated QA curation: accept / review / reject pools |
+| `utils/export_final_assets.py` | **implemented** | Export final approved assets into assets_final / backgrounds_final |
+| `utils/fix_gemini_drone_transparency.py` | **implemented** | rembg batch alpha fix for opaque Gemini drone PNGs |
+| `utils/validate_final_asset_pack.py` | **implemented** | Validate final asset pack folders and metadata |
+| `utils/filter_extracted_assets.py` | **implemented** | Filter assets by quality_label for generation |
+| `utils/filter_coco_hard_negatives.py` | **implemented** | Strict filter for COCO full-image hard negatives |
+| `adapters/extract_coco_segmentation_assets.py` | **implemented** | COCO segmentation â†’ RGBA distractor assets (legacy) |
+| `02_extract_assets.py` | **implemented** | Folder threshold + annotation bbox/SAM2 (`--use-sam2`) |
+| `03_generate_synthetic.py` | **implemented** | Generate pilot / final v1 synthetic images, YOLO labels, `metadata.csv` |
+| `04_visualize_samples.py` | **implemented** | Contact sheets with bbox overlays (uses `--config`) |
+| `05_dataset_summary.py` | **implemented** | Print/save text summary of `metadata.csv` |
+| `06_filter_flying_object_scenes.py` | **implemented** | Viewpoint filter + optional CLIP pre-filter for annotation CSV rows |
+| `07_visualize_extracted_assets.py` | **implemented** | SAM2 extracted asset QA contact sheets + metadata summary |
+| `05_evaluate_predictions.py` | stub | Future: identification % / false-ID % (no training yet) |
+
+Note: `05_dataset_summary.py` and `05_evaluate_predictions.py` share the `05_` prefix but do different jobs. Use **`05_dataset_summary.py`** after generation for sanity checks.
+
+---
+
+## Quick Start (Pilot Generator)
+
+### 1. Install dependencies
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2. Add raw pilot assets
+
+Place images under `data/raw/` (see `data/raw/README.md`). Backgrounds and distractors use **category subfolders** matching `configs/pilot.yaml`.
+
+**Distractors (important):** use one folder per class under `data/raw/distractors/` (`bird/`, `airplane/`, `kite/`, `cloud_blob/`). Do not mix classes in the same folder â€” `distractor_classes` and `asset_id` in metadata are derived from the folder + filename. Generation fails if any configured class folder is empty.
+
+### 2a. Seraphim YOLO ingestion (real drone dataset)
+
+Download the **Seraphim Drone Detection Dataset** yourself (this repo does **not** fetch it). Place it on disk in a standard YOLO layout:
+
+**Option A:** `images/<split>/` + `labels/<split>/`  
+**Option B:** `<split>/images/` + `<split>/labels/` (splits may use `val` or `valid`)
+
+**Step 1 â€” Convert YOLO labels to internal annotation CSV:**
+
+```bash
+python code/scripts/adapters/seraphim_yolo_to_annotations.py \
+  --dataset-root path/to/seraphim \
+  --output-csv data/processed/annotations/seraphim_drone_annotations.csv \
+  --class-name drone \
+  --source-dataset Seraphim \
+  --splits train val valid test \
+  --min-bbox-px 4
+```
+
+Pilot cap (optional): `--max-rows 500`
+
+| Flag | Purpose |
+|------|---------|
+| `--dataset-root` | Root of the downloaded YOLO dataset |
+| `--output-csv` | Annotation CSV for `02_extract_assets.py annotate` |
+| `--class-name` | `class_name` column (default: `drone`) |
+| `--source-dataset` | Provenance label (default: `Seraphim`) |
+| `--target-class-id` | YOLO class id to export (default: `0`) |
+| `--splits` | Which split folders to scan |
+| `--min-bbox-px` | Drop tiny boxes (default: `4`) |
+
+Writes `outputs/reports/seraphim_annotation_conversion_report.txt` (counts, filter reasons, bbox size stats).
+
+CSV columns: `filename`, `image_path`, `class_name`, `x`, `y`, `w`, `h`, `source_dataset`, `split`, `image_width`, `image_height`, `yolo_class_id`.  
+`filename` / `image_path` are **relative to `--dataset-root`** so extraction uses a single image root.
+
+Optional **Step 1b:** run `06_filter_flying_object_scenes.py` on the CSV before extraction (see BirdvsDrone2 Â§2a-ii).
+
+**Step 2 â€” Bbox crop extraction (bridge, not final assets):**
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type drone \
+  --annotations data/processed/annotations/seraphim_drone_annotations.csv \
+  --image-root path/to/seraphim \
+  --output-dir data/processed/assets_drone_seraphim \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh \
+  --bbox-columns x y w h
+```
+
+**Warning:** bbox crops have rectangular alpha (`extraction_method=bbox_crop`, `needs_sam2_refinement=True`). They are **not** final compositing assets until **SAM/SAM2** mask refinement. **Do not train** on bbox crops.
+
+For multi-class YOLO datasets, use the generic adapter below instead of re-running Seraphim export per class.
+
+### 2a-ii. BirdvsDrone2 YOLO ingestion (bird + drone)
+
+Download **BirdvsDrone2** yourself (not fetched by this repo). Ensure `data.yaml` is at the dataset root with class names, e.g.:
+
+```yaml
+names:
+  0: bird
+  1: drone
+```
+
+or `names: ["bird", "drone"]`.
+
+**Step 1 â€” Convert YOLO labels to one internal annotation CSV (both classes):**
+
+```bash
+python code/scripts/adapters/yolo_to_annotations.py \
+  --dataset-root path/to/BirdvsDrone2 \
+  --output-csv data/processed/annotations/birdvsdrone2_annotations.csv \
+  --source-dataset BirdvsDrone2 \
+  --class-filter bird drone \
+  --splits train valid val test \
+  --min-bbox-px 4 \
+  --report outputs/reports/birdvsdrone2_annotation_conversion_report.txt
+```
+
+Pilot cap (optional): `--max-rows 500`
+
+| Flag | Purpose |
+|------|---------|
+| `--dataset-root` | Root containing `data.yaml` and split folders |
+| `--output-csv` | Combined annotation CSV (bird + drone rows) |
+| `--source-dataset` | Provenance label (e.g. `BirdvsDrone2`) |
+| `--class-filter` | Subset of `data.yaml` class names to export |
+| `--splits` | Split folders to scan (`train`, `valid`/`val`, `test`) |
+| `--min-bbox-px` | Drop tiny boxes (default: `4`) |
+
+Writes `outputs/reports/birdvsdrone2_annotation_conversion_report.txt` with counts by split, **by class_name**, filter reasons, and bbox size stats.
+
+**Step 1b â€” Scene / viewpoint filter (recommended before extraction):**
+
+Large bbox alone is **not** rejected. A large clear drone or bird can be a useful extraction source; **synthetic generation controls final pasted size** (`drone_size_px` in `configs/pilot.yaml`). Bbox size is a **QA signal**, not the main filter criterion.
+
+Filtering targets **viewpoint compatibility** for compositing:
+
+| Accepted | Rejected |
+|----------|----------|
+| `ground_to_air` | `top_down`, `air_to_air` |
+| `horizon_side_view` | `drone_on_ground`, `bird_on_ground`, `product_photo`, `indoor`, `irrelevant` |
+
+```bash
+python code/scripts/06_filter_flying_object_scenes.py \
+  --annotations data/processed/annotations/birdvsdrone2_annotations.csv \
+  --image-root path/to/BirdvsDrone2 \
+  --output-csv data/processed/annotations/birdvsdrone2_annotations_filtered.csv \
+  --report outputs/reports/birdvsdrone2_scene_filter_report.txt \
+  --filter-purpose asset_extraction
+```
+
+Default merge policy is **`asset_extraction`** (permissive): heuristic accepts are preserved unless CLIP gives a strong bad label. Use **`real_eval`** for stricter review of large / close-up scenes.
+
+**Optional CLIP pre-filtering** (`--use-clip`): CLIP scores full-frame + expanded bbox-context crops against fixed viewpoint prompts. It is **not ground truth** â€” use it to **prioritize manual review**, not as the sole accept/reject rule. Low `clip_margin` is flagged in `clip_low_margin` but does not auto-demote strong heuristic accepts.
+
+Install optional deps: `pip install -r requirements-clip.txt`
+
+```bash
+python code/scripts/06_filter_flying_object_scenes.py \
+  --annotations data/processed/annotations/birdvsdrone2_annotations_pilot.csv \
+  --image-root C:\datasets\birdvsdrone2 \
+  --output-csv data/processed/annotations/birdvsdrone2_annotations_filtered_clip.csv \
+  --report outputs/reports/birdvsdrone2_scene_filter_clip_report.txt \
+  --filter-purpose asset_extraction \
+  --use-clip \
+  --make-contact-sheets
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--filter-purpose asset_extraction` | Default: preserve heuristic accepts; large objects often useful for extraction |
+| `--filter-purpose real_eval` | Stricter: large bbox stays review unless strong sky/horizon evidence |
+| `--use-clip` | Enable CLIP pre-filtering (default: heuristic only) |
+| `--clip-margin-threshold` | Flag `clip_low_margin` below this; does not auto-demote strong heuristic accepts |
+| `--make-contact-sheets` | Save QA PNG (4-line tile titles: disposition, heuristic, CLIP, merge reason) |
+
+| Disposition | Typical filter reasons |
+|-------------|------------------------|
+| `accept` | `flying_sky_candidate`, `horizon_candidate` (+ CLIP agree in asset_extraction mode) |
+| `review` | `large_object_review`, `large_but_sky_candidate`, CLIP disagreement |
+| `reject` | `likely_product_or_ground_closeup`, `likely_top_down_or_non_sky`, CLIP bad + weak sky |
+
+**Step 2 â€” Split by disposition and class (extraction prep):**
+
+Split the filtered CSV into smaller files for bbox crop extraction. This script **only writes CSVs**; it does not run extraction.
+
+```bash
+python code/scripts/utils/split_filtered_annotations.py \
+  --input-csv data/processed/annotations/birdvsdrone2_annotations_filtered_clip.csv \
+  --output-dir data/processed/annotations/splits
+```
+
+Outputs under `data/processed/annotations/splits/`:
+
+| File | Use |
+|------|-----|
+| `birdvsdrone2_accept_all.csv` | All accepted rows |
+| `birdvsdrone2_review_all.csv` | Rows flagged for manual review |
+| `birdvsdrone2_reject_all.csv` | Rejected rows (audit only) |
+| `birdvsdrone2_accept_drone.csv` | Drone accepts â†’ extraction |
+| `birdvsdrone2_accept_bird.csv` | Bird accepts â†’ extraction |
+| `birdvsdrone2_review_drone.csv` | Drone review queue |
+| `birdvsdrone2_review_bird.csv` | Bird review queue |
+
+Optional: `--prefix birdvsdrone2` overrides the auto-derived filename prefix.
+
+**Step 3 â€” SAM2 mask extraction (accepted rows only):**
+
+Install optional deps (GPU recommended):
+
+```bash
+pip install -r requirements-sam2.txt
+```
+
+Extract **accepted** drones and birds with SAM2 box prompts. Review rows are **not** processed yet.
+
+Each extracted asset receives automatic **mask QA** metadata (`mask_quality_label`: `accept`, `review`, or `reject`) based on SAM2 output quality â€” not original bbox size. Large source bboxes can still yield good masks.
+
+**10-drone smoke test:**
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type drone \
+  --annotations data/processed/annotations/splits/birdvsdrone2_accept_drone.csv \
+  --image-root path/to/BirdvsDrone2 \
+  --output-dir data/processed/assets_drone_birdvsdrone2_sam2_test \
+  --class-column class_name \
+  --filename-column image_path \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns x y w h \
+  --use-sam2 \
+  --sam2-model-size tiny \
+  --sam2-device auto \
+  --sam2-expand-box-ratio 0.10 \
+  --sam2-max-rows 10
+```
+
+**10-bird smoke test:**
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type distractor \
+  --annotations data/processed/annotations/splits/birdvsdrone2_accept_bird.csv \
+  --image-root path/to/BirdvsDrone2 \
+  --output-dir data/processed/assets_distractors_birdvsdrone2_sam2_test/bird \
+  --class-column class_name \
+  --filename-column image_path \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns x y w h \
+  --use-sam2 \
+  --sam2-model-size tiny \
+  --sam2-device auto \
+  --sam2-expand-box-ratio 0.10 \
+  --sam2-max-rows 10
+```
+
+**Full accepted drones (52 rows):**
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type drone \
+  --annotations data/processed/annotations/splits/birdvsdrone2_accept_drone.csv \
+  --image-root path/to/BirdvsDrone2 \
+  --output-dir data/processed/assets_drone_birdvsdrone2 \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns x y w h \
+  --use-sam2 \
+  --sam2-model-size tiny \
+  --sam2-device auto \
+  --sam2-expand-box-ratio 0.10
+```
+
+**Full accepted birds (86 rows):**
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type distractor \
+  --annotations data/processed/annotations/splits/birdvsdrone2_accept_bird.csv \
+  --image-root path/to/BirdvsDrone2 \
+  --output-dir data/processed/assets_distractors_birdvsdrone2/bird \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns x y w h \
+  --use-sam2 \
+  --sam2-model-size tiny \
+  --sam2-device auto \
+  --sam2-expand-box-ratio 0.10
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--use-sam2` | SAM2 box-prompt masks (`extraction_method=sam2_mask`); without it, bbox crop unchanged |
+| `--sam2-model-size` | `tiny` (default), `small`, `base`, `large` |
+| `--sam2-checkpoint` | Optional local `.pt`; default downloads from Hugging Face |
+| `--sam2-device` | `auto`, `cpu`, `cuda`, `mps` |
+| `--sam2-expand-box-ratio` | Expand bbox before SAM2 prompt (default `0.10`) |
+| `--sam2-max-rows` | Optional row cap for pilot / smoke tests |
+| `--sam2-qa-sheet-dir` | Directory for accept/review/reject contact sheets (default `outputs/contact_sheets/`) |
+| `--qa-report-output` | Text QA summary (default `outputs/reports/sam2_extraction_qa_report.txt`) |
+
+**SAM2 mask QA criteria** (judges SAM2 mask output, not source bbox size):
+
+| Label | Conditions | Example reasons |
+|-------|------------|-----------------|
+| `reject` | Empty mask, area ratio &lt; 0.01, area ratio &gt; 0.95, or mask touches â‰¥ 3 crop borders | `empty_mask`, `mask_too_small`, `likely_background_blob`, `mask_touches_many_borders` |
+| `review` | Area ratio 0.01â€“0.05, area ratio &gt; 0.80, touches exactly 2 borders, or SAM2 failed â†’ bbox fallback | `mask_small_review`, `mask_too_large_review`, `mask_touches_two_borders`, `sam2_failed_bbox_fallback` |
+| `accept` | SAM2 succeeded, area ratio 0.05â€“0.80, touches â‰¤ 1 border, no reject reasons | (none) |
+
+SAM2 inference failure falls back to rectangular bbox (`extraction_method=bbox_crop_fallback`, `mask_quality_label=review`, `needs_manual_review=true`).
+
+**Outputs after `--use-sam2`:**
+
+| Output | Purpose |
+|--------|---------|
+| `<output-dir>/asset_metadata.csv` | Per-asset QA columns (see below) |
+| `outputs/contact_sheets/sam2_assets_accept.png` | Checkerboard QA sheet â€” accepted masks |
+| `outputs/contact_sheets/sam2_assets_review.png` | Masks needing human review |
+| `outputs/contact_sheets/sam2_assets_reject.png` | Failed / unusable masks |
+| `outputs/reports/sam2_extraction_qa_report.txt` | Counts by label, method, and review reason |
+
+**Step 4 â€” Visualize SAM2 extraction QA (contact sheets):**
+
+After extraction, build or refresh QA contact sheets from the asset directory and metadata.
+Use `--recursive` when PNGs live in class subfolders (e.g. `.../bird/`).
+
+**Drone SAM2 QA:**
+
+```bash
+python code/scripts/07_visualize_extracted_assets.py \
+  --assets-dir data/processed/assets_drone_birdvsdrone2_sam2_test \
+  --output outputs/contact_sheets/birdvsdrone2_drone_sam2_qa.png \
+  --recursive \
+  --max-assets 100
+```
+
+**Bird SAM2 QA** (assets may be under a class subfolder):
+
+```bash
+python code/scripts/07_visualize_extracted_assets.py \
+  --assets-dir data/processed/assets_bird_birdvsdrone2_sam2_test \
+  --output outputs/contact_sheets/birdvsdrone2_bird_sam2_qa.png \
+  --recursive \
+  --max-assets 100
+```
+
+Optional flags: `--metadata path/to/asset_metadata.csv`, `--light-background`, `--title-column mask_quality_label`.
+
+The script prints counts by `mask_quality_label`, `extraction_method`, and `asset_class`. Review contact sheets before compositing.
+
+**Without `--use-sam2`** (legacy bbox bridge):
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type drone \
+  --annotations data/processed/annotations/splits/birdvsdrone2_accept_drone.csv \
+  --image-root path/to/BirdvsDrone2 \
+  --output-dir data/processed/assets_drone_birdvsdrone2 \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns x y w h
+```
+
+### 2a-iii. COCO val2017 distractor adapter
+
+Download **COCO 2017 val** yourself (not fetched by this repo). Typical layout:
+
+```text
+C:\datasets\coco2017\images\val2017\
+C:\datasets\coco2017\annotations\instances_val2017.json
+```
+
+**Primary use (recommended):** full-frame **real hard-negative images** â€” see [Â§2a-vii](#2a-vii-coco-real-hard-negative-images). Many isolated COCO masks are poor compositing assets (standing birds, partial aircraft, blurry kite fragments), so cutout extraction is **not** the main COCO workflow.
+
+**Legacy / optional:** annotation CSV and cutout extraction below (SAM2 or segmentation) â€” kept for reference, not recommended for the first benchmark.
+
+**Legacy Step 1 â€” Convert selected COCO categories to internal annotation CSV:**
+
+```bash
+python code/scripts/adapters/coco_to_annotations.py \
+  --annotation-json C:\datasets\coco2017\annotations\instances_val2017.json \
+  --image-root C:\datasets\coco2017\images\val2017 \
+  --output-csv data/processed/annotations/coco_val2017_distractors_annotations.csv \
+  --categories bird airplane kite \
+  --source-dataset COCO_val2017 \
+  --min-bbox-px 8 \
+  --make-report
+```
+
+Pilot cap (optional): `--max-rows 500`
+
+| Flag | Purpose |
+|------|---------|
+| `--annotation-json` | COCO `instances_*.json` file |
+| `--image-root` | Folder containing COCO image files referenced by `file_name` |
+| `--output-csv` | Combined annotation CSV for `02_extract_assets.py annotate` |
+| `--categories` | COCO category names to export (default: `bird airplane kite`) |
+| `--source-dataset` | Provenance label (default: `COCO_val2017`) |
+| `--split` | Split column value (default: `val2017`) |
+| `--min-bbox-px` | Drop tiny boxes â€” max(w,h) below threshold (default: `8`) |
+| `--max-bbox-px` | Optional upper size cap |
+| `--max-rows` | Cap exported rows for pilot testing |
+| `--include-iscrowd` | Include `iscrowd=1` crowd annotations |
+| `--make-report` | Write `outputs/reports/coco_val2017_annotation_conversion_report.txt` |
+
+**Output CSV columns:** `filename`, `image_path`, `source_dataset`, `split`, `class_name`, `class_id`, `bbox_x`, `bbox_y`, `bbox_w`, `bbox_h`, `bbox_format`, `image_width`, `image_height`, `area`, `iscrowd`, `annotation_id`, `image_id`, `supercategory`.
+
+**Step 1b â€” Optional scene / viewpoint filter** (recommended before extraction): same as BirdvsDrone2 â€” run `06_filter_flying_object_scenes.py` with `--filter-purpose asset_extraction`.
+
+**Step 1c â€” Split by class (optional, for per-class extraction):**
+
+```bash
+python code/scripts/utils/split_annotations_by_class.py \
+  --input-csv data/processed/annotations/coco_val2017_distractors_annotations.csv \
+  --output-dir data/processed/annotations/splits \
+  --prefix coco_val2017 \
+  --class-column class_name
+```
+
+Writes `coco_val2017_bird.csv`, `coco_val2017_airplane.csv`, `coco_val2017_kite.csv`, and `coco_val2017_all.csv` under `data/processed/annotations/splits/`. Does not modify the input CSV.
+
+### 2a-iv. COCO segmentation distractor extraction (preferred over SAM2)
+
+For **COCO val2017** bird / airplane / kite, prefer **native instance segmentation masks** (`extraction_method=coco_segmentation_mask`). COCO objects are often small, thin, or cluttered â€” SAM2 box prompts frequently produce bad cuts. SAM2 via `02_extract_assets.py` remains available as an optional fallback.
+
+Install optional deps (RLE masks; polygon also works with OpenCV fallback):
+
+```bash
+pip install -r requirements-coco.txt
+```
+
+```bash
+python code/scripts/adapters/extract_coco_segmentation_assets.py \
+  --annotation-json C:\datasets\coco2017\annotations\instances_val2017.json \
+  --image-root C:\datasets\coco2017\images\val2017 \
+  --output-dir C:\datasets\coco2017\assets\coco_segmentation_distractors \
+  --categories bird airplane kite \
+  --source-dataset COCO_val2017 \
+  --min-bbox-px 20 \
+  --expand-box-ratio 0.05 \
+  --class-subdirs \
+  --make-contact-sheets \
+  --qa-report-output outputs/reports/coco_segmentation_asset_qa_report.txt
+```
+
+Pilot cap: `--max-rows 50`
+
+| Flag | Purpose |
+|------|---------|
+| `--output-dir` | Short PNG root (default: `C:\datasets\coco2017\assets\coco_segmentation_distractors`) |
+| `--min-bbox-px` | Skip tiny boxes â€” max(w,h) below threshold (default: `20`) |
+| `--expand-box-ratio` | Expand crop around bbox for context (default: `0.05`); alpha follows segmentation |
+| `--class-subdirs` | `output-dir/bird/`, `airplane/`, `kite/` (default; use `--flat-output` to disable) |
+| `--make-contact-sheets` | Per-class + accept/review/reject QA sheets under `outputs/contact_sheets/` |
+| `--qa-report-output` | QA summary CSV stats |
+| `--extraction-report` | Full extraction/skip report (default: `outputs/reports/coco_segmentation_asset_extraction_report.txt`) |
+
+**Outputs:**
+
+| Path | Purpose |
+|------|---------|
+| `<output-dir>/asset_metadata.csv` | Per-asset QA + provenance |
+| `<output-dir>/<class>/*.png` | RGBA crops (alpha = COCO segmentation) |
+| `outputs/contact_sheets/coco_seg_<class>_assets.png` | Per-class QA |
+| `outputs/contact_sheets/coco_seg_{accept,review,reject}_sample.png` | QA disposition samples |
+
+### 2a-v. COCO distractor semantic filter (approved subset)
+
+After segmentation extraction, filter assets by **semantic usefulness** for skyborne hard negatives (flying birds, recognizable aircraft, usable kites â€” not standing birds, nose-only planes, or fragments).
+
+```bash
+python code/scripts/utils/filter_coco_distractor_assets.py \
+  --metadata C:\datasets\coco2017\assets\coco_segmentation_distractors\asset_metadata.csv \
+  --assets-root C:\datasets\coco2017\assets\coco_segmentation_distractors \
+  --output-root C:\datasets\coco2017\assets\coco_distractors_approved \
+  --copy \
+  --make-contact-sheets \
+  --max-per-class bird=100 airplane=60 kite=100
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--metadata` | `asset_metadata.csv` from segmentation extraction |
+| `--assets-root` | Source PNG root (`bird/`, `airplane/`, `kite/`) |
+| `--output-root` | Approved copy root (default: `coco_distractors_approved`) |
+| `--review-root` | Review copy root (default: sibling `coco_distractors_review`) |
+| `--copy` | Copy PNGs into approved/review folders |
+| `--max-per-class` | Cap approved per class with diverse sampling (seed 42) |
+| `--technical-labels` | Pre-filter `mask_quality_label` values (default: `accept review`) |
+
+**Outputs:** `coco_distractors_approved/` + `coco_distractors_review/` with `distractor_metadata_approved.csv`, `distractor_metadata_review.csv`, contact sheets `coco_distractors_{approved,review}_<class>.png`, report `outputs/reports/coco_distractor_filter_report.txt`.
+
+### 2a-vi. Manual strict approval (keep-list)
+
+Semantic auto-filter still allows standing birds, partial aircraft, and fragments. For the first benchmark, **manually curate** a strict subset using asset_id keep-lists (no classifier).
+
+Template lists (comments only â€” add one `asset_id` per line):
+
+```text
+data/processed/keep_lists/coco_bird_keep.txt
+data/processed/keep_lists/coco_airplane_keep.txt
+data/processed/keep_lists/coco_kite_keep.txt
+data/processed/keep_lists/coco_distractors_keep.txt
+```
+
+```bash
+python code/scripts/utils/select_assets_by_keep_list.py \
+  --metadata C:\datasets\coco2017\assets\coco_distractors_approved\distractor_metadata_approved.csv \
+  --keep-list data/processed/keep_lists/coco_distractors_keep.txt \
+  --output-root C:\datasets\coco2017\assets\coco_distractors_strict_approved \
+  --copy \
+  --make-contact-sheets
+```
+
+**Outputs:** `coco_distractors_strict_approved/{bird,airplane,kite}/`, `distractor_metadata_strict_approved.csv` (columns `strict_approved=true`, `strict_selection_method=manual_keep_list`), contact sheets `coco_distractors_strict_<class>.png`.
+
+### 2a-vii. COCO real hard-negative images
+
+**Recommended COCO workflow:** copy **full original val2017 images** that contain bird / airplane / kite. No masks, no alpha cutouts, no SAM2. These are **real hard-negative frames** for **false-positive testing** (`target_present=false`, `subset=hard_negative_real`, `label_policy=no_drone_target`). They are **not** compositing cutout assets â€” many isolated COCO masks are poor distractor crops (standing birds, partial aircraft, kite fragments).
+
+**Benchmark role:** COCO hard negatives measure whether a detector **false-identifies** birds, planes, or kites as drones in natural scenes. **Synthetic drone-positive images** (Â§3) provide **controlled boundary testing** (size, noise, blur, background) for identification percentage. Use both subsets separately in evaluation â€” do not train on threshold cutouts or unfiltered COCO frames without visual review.
+
+Dominant distractor type = category of the **largest** requested bbox in the image (by area). Images with multiple requested categories are assigned to one folder only.
+
+```bash
+python code/scripts/adapters/coco_hard_negative_images.py \
+  --annotation-json C:\datasets\coco2017\annotations\instances_val2017.json \
+  --image-root C:\datasets\coco2017\images\val2017 \
+  --output-dir C:\datasets\coco2017\hard_negatives \
+  --categories bird airplane kite \
+  --source-dataset COCO_val2017 \
+  --min-object-px 20 \
+  --max-images-per-category bird=150 airplane=100 kite=100 \
+  --copy \
+  --make-contact-sheets
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--output-dir` | Short root for copied JPEGs (default: `C:\datasets\coco2017\hard_negatives`) |
+| `--min-object-px` | Skip images where all requested objects have max(w,h) below this (default: `20`) |
+| `--max-images-per-category` | Cap per dominant category with area-biased sampling (default: bird=150, airplane=100, kite=100) |
+| `--copy` | Copy full images into `output-dir/<category>/` |
+| `--make-contact-sheets` | `outputs/contact_sheets/coco_hard_negative_<class>.png` |
+
+**Outputs:** `coco_hard_negative_metadata.csv`, report `outputs/reports/coco_hard_negative_images_report.txt`.
+
+### 2a-viii. COCO hard-negative strict filter
+
+The initial full-image set (Â§2a-vii) is intentionally broad (293 images: bird 109, airplane 96, kite 88). Run a **second-pass metadata filter** to keep outdoor sky/horizon scenes with plausibly airborne or distant distractors. Route indoor, portrait, museum, ground-closeup, and tiny-object frames to review.
+
+```bash
+python code/scripts/utils/filter_coco_hard_negatives.py \
+  --metadata C:\datasets\coco2017\hard_negatives\coco_hard_negative_metadata.csv \
+  --image-root C:\datasets\coco2017\hard_negatives \
+  --output-dir C:\datasets\coco2017\hard_negatives_strict \
+  --review-dir C:\datasets\coco2017\hard_negatives_review \
+  --copy \
+  --make-contact-sheets \
+  --seed 42 \
+  --max-per-category bird=70 airplane=70 kite=80
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--output-dir` | Approved strict root (default: `hard_negatives_strict`) |
+| `--review-dir` | Review copy root (default: `hard_negatives_review`) |
+| `--max-per-category` | Cap approved per dominant category (default: bird=70, airplane=70, kite=80) |
+| `--copy` | Copy JPEGs into strict/review category folders |
+| `--make-contact-sheets` | `coco_hard_negative_strict_<class>.png` and `coco_hard_negative_review_<class>.png` |
+
+**Heuristics:** metadata bbox geometry (`max_bbox_px`, `bbox_area_ratio`, `bbox_center_y_ratio`, `bbox_aspect_ratio`, `num_requested_objects`) plus optional `sky_ratio_upper` boost from existing background code. Adds `final_hard_negative_status` (`approved` / `review` / `reject`) and `hard_negative_filter_reason`. When uncertain, images go to **review** rather than reject.
+
+**Outputs:** `coco_hard_negative_metadata_strict.csv`, `coco_hard_negative_metadata_review.csv`, report `outputs/reports/coco_hard_negative_filter_report.txt`.
+
+### 2a-ix. COCO sky backgrounds for compositing (strict)
+
+SkyFinder webcam scenes repeat too often in small synthetic runs. Use **COCO val2017** as a diverse candidate pool and extract **high-precision** sky-visible outdoor frames for `final_v1` compositing (`configs/final_v1.yaml` â†’ `backgrounds_coco_sky_strict`).
+
+**Strict filter (default):** prefers fewer, cleaner backgrounds over recall. COCO instance annotations reject person-, animal-, food-, indoor-furniture-, sports-closeup-, and vehicle-dominated scenes. Upper-sky ratio thresholds vary by category (`clear_upper_sky` â‰¥ 0.45, `cloudy_sky` â‰¥ 0.35, landscape/built â‰¥ 0.20 with outdoor context). Rejects `largest_bbox_area_ratio > 0.35` (unless very large upper sky) and `bad_category_area_ratio > 0.25`.
+
+```powershell
+python code/scripts/adapters/coco_sky_backgrounds.py `
+  --image-root C:\datasets\coco2017\images\val2017 `
+  --annotation-json C:\datasets\coco2017\annotations\instances_val2017.json `
+  --output-root data\processed\backgrounds_coco_sky_strict `
+  --metadata-out data\processed\backgrounds_coco_sky_strict_metadata.csv `
+  --max-images 500 `
+  --copy `
+  --make-contact-sheets
+```
+
+**Windows path length:** if copy fails on deep project paths, use a short `--output-root` such as `C:\datasets\coco2017\backgrounds_coco_sky_strict` (also set in `final_v1.yaml` as `backgrounds_dir_fallback`). The script uses long-path copy when needed.
+
+| Flag | Purpose |
+|------|---------|
+| `--max-images` | Cap **approved** copies with balanced V1 categories (default: 500) |
+| `--copy` | Copy into `output-root/<category>/` (`clear_upper_sky`, â€¦, `review`) |
+| `--make-contact-sheets` | `outputs/contact_sheets/coco_sky_strict_<category>.png` |
+| `--permissive` | Legacy permissive filter (not recommended) |
+
+**Outputs:** `data/processed/backgrounds_coco_sky_strict/{clear_upper_sky,cloudy_sky,sky_with_natural_landscape,sky_with_built_environment,review,reject}/`, metadata `backgrounds_coco_sky_strict_metadata.csv` (`upper_sky_ratio`, `full_sky_ratio`, `largest_bbox_area_ratio`, `bad_category_area_ratio`, `dominant_categories`, â€¦), report `outputs/reports/coco_sky_backgrounds_strict_report.txt`.
+
+On full val2017 (~5000 images), expect roughly **~900 accepts**, **~50 review**, **~4000 reject** (exact counts depend on thresholds). Inspect contact sheets before regenerating synthetic data.
+
+### 2a-x. AirBirds diversity inspection (candidate backgrounds / hard negatives)
+
+[AirBirds](https://airbirdsdata.github.io/) is time-series imagery from fixed airport cameras â€” many near-duplicate frames per sequence. Before using a chunk for compositing backgrounds or bird hard negatives, run a **diversity audit** on one extracted zip.
+
+```powershell
+python code/scripts/adapters/airbirds_inspect.py `
+  --dataset-root <path-to-extracted-AirBirds-chunk> `
+  --output-root data\processed\airbirds_inspection `
+  --max-images 5000 `
+  --temporal-stride 100 `
+  --phash-threshold 6 `
+  --make-contact-sheets
+```
+
+| Step | Purpose |
+|------|---------|
+| Temporal thinning | Keep every Nth frame per sequence folder (parent directory under `--dataset-root`) |
+| pHash dedup | Cluster near-duplicates (Hamming distance â‰¤ `--phash-threshold`); keep one per group |
+| YOLO labels | If present, records `has_bird_annotation`, `num_birds`, bbox sizes (class `bird` / id 0) |
+
+**Outputs:** `data/processed/airbirds_inspection/airbirds_inspection_metadata.csv`, report `airbirds_inspection_report.txt`, contact sheets `outputs/contact_sheets/airbirds_{raw,temporal_thinned,deduped,with_birds,no_birds}_sample.png`.
+
+Inspect sheets and the printed **estimated usable distinct backgrounds** count before committing AirBirds to the benchmark pipeline.
+
+### 2a-xi. Places365 high-resolution validation backgrounds
+
+Replace low-diversity webcam / 256Ã—256 splits with **Places365-Standard `val_large`** high-resolution validation images. Do **not** use `val_256.tar`, `places365standard_easyformat.tar`, or the 256Ã—256 easyformat split.
+
+```powershell
+python code/scripts/adapters/places365_highres_prepare_backgrounds.py `
+  --places-root C:\datasets\places365 `
+  --images-root C:\datasets\places365\extracted `
+  --categories-file C:\datasets\places365\categories_places365.txt `
+  --filelist C:\datasets\places365\places365_val.txt `
+  --output-root data\processed\backgrounds_places365_highres_candidates `
+  --metadata-out data\processed\backgrounds_places365_highres_candidates_metadata.csv `
+  --make-contact-sheets
+```
+
+**Target Places365 categories** (if present in taxonomy): `/s/sky`, `/s/skyline` (alias: `/s/skyscraper`), `/r/runway`, `/r/rooftop`, `/f/field/wild`, `/f/field/cultivated`, `/c/coast`, `/m/mountain`, `/h/highway`, `/v/valley`, `/d/desert/sand`, `/l/lake/natural`, `/p/parking_lot`.
+
+**Mapped project categories:** `clear_upper_sky`, `cloudy_sky`, `sky_with_natural_landscape`, `sky_with_built_environment`, `runway_or_airport`.
+
+**Filtering:** min shorter side 512 px; `upper_sky_ratio` heuristic from `background_filter`; reject &lt; 0.10; borderline â†’ `review/`; optional pHash dedup (`imagehash` if installed, else OpenCV pHash).
+
+**Outputs:** `data/processed/backgrounds_places365_highres_candidates/<mapped_category>/`, metadata CSV, report `outputs/reports/places365_highres_backgrounds_report.txt`, contact sheets `outputs/contact_sheets/places365_highres_*.png`.
+
+**Windows path length:** if copy fails under the deep project path, use a short `--output-root` such as `C:\datasets\places365\backgrounds_candidates`.
+
+### 2a-xii. Places365 CLIP suitability filter
+
+The category-based Places365 pass (Â§2a-xi) is intentionally broad. Run a **second-pass CLIP filter** to reject close-ups, indoor scenes, stylized images, vehicle/aircraft/bird-dominated frames, and low-sky scenes before compositing.
+
+```powershell
+pip install -r requirements-clip.txt
+
+python code/scripts/utils/clip_filter_places365_backgrounds.py `
+  --metadata data\processed\backgrounds_places365_highres_candidates_metadata.csv `
+  --candidate-root data\processed\backgrounds_places365_highres_candidates `
+  --output-root C:\datasets\places365\backgrounds_clip_filtered `
+  --metadata-out data\processed\backgrounds_places365_clip_filtered_metadata.csv `
+  --top-k-per-category 80 `
+  --suitability-threshold 0.02 `
+  --make-contact-sheets
+```
+
+| Step | Purpose |
+|------|---------|
+| CLIP good/bad prompts | `clip_suitability_score = max(good) - max(bad)` |
+| Threshold | Reject below `--suitability-threshold` (default `0.02`) |
+| Top-k | Keep best `--top-k-per-category` per `mapped_background_type` (ranked by suitability, then `upper_sky_ratio`) |
+
+**Outputs:** `backgrounds_places365_clip_filtered/<mapped_category>/`, metadata with `clip_*` columns, report `outputs/reports/places365_clip_filter_report.txt`, contact sheets `outputs/contact_sheets/places365_clip_filtered_*.png`.
+
+CLIP is **not ground truth** â€” inspect contact sheets before using in synthetic generation.
+
+### 2a-xiii. Places365 manual final approval
+
+After CLIP filtering (Â§2a-xii), manually curate the remaining candidates. Accept only realistic outdoor images with a plausible sky/air region for small drone placement. Reject close-ups, people, cars, animals, food, indoor scenes, large aircraft/birds, watermarks, stylized art, and tiny-sky frames.
+
+**Step 1 â€” create review manifest + numbered contact sheets:**
+
+```powershell
+python code/scripts/utils/finalize_places365_clip_backgrounds.py `
+  --metadata data\processed\backgrounds_places365_clip_filtered_metadata.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --make-contact-sheets
+```
+
+Edit `backgrounds_places365_final_review_manifest.csv`: set `decision` to `accept` or `reject`, optionally adjust `final_category` and `notes`.
+
+**Step 2 â€” apply decisions:**
+
+```powershell
+python code/scripts/utils/finalize_places365_clip_backgrounds.py `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --final-root data\processed\backgrounds_places365_final_v1 `
+  --metadata-out data\processed\backgrounds_places365_final_v1_metadata.csv `
+  --apply-decisions `
+  --make-contact-sheets
+```
+
+**Outputs:** `backgrounds_places365_final_v1/<category>/`, `backgrounds_places365_final_v1_metadata.csv`, review sheets `places365_final_review_*.png`, final sheets `backgrounds_places365_final_v1_*.png`.
+
+### 2a-xv. Places365 high-resolution background workflow (final)
+
+We use **Places365-Standard high-resolution validation images** (`val_large`), **not** the 256Ã—256 easyformat split.
+
+**Pipeline:**
+
+1. **Category candidate extraction** â€” `code/scripts/adapters/places365_highres_prepare_backgrounds.py` (Â§2a-xi)
+2. **CLIP suitability filtering** â€” `code/scripts/utils/clip_filter_places365_backgrounds.py` (Â§2a-xii)
+3. **GPT-4o mini vision triage** â€” `code/scripts/utils/gpt_review_places365_backgrounds.py` (Â§2a-xiv)
+4. **Final export with metadata preservation** â€” `code/scripts/utils/export_places365_final_accepts.py`
+
+**Final folder:** `data/processed/backgrounds_places365_final_v1/`
+
+| File | Purpose |
+|------|---------|
+| `images/<final_category>/` | Accepted background JPEGs |
+| `metadata_accepted.csv` | Full manifest rows for exported accepts |
+| `metadata_all_reviews.csv` | All manifest rows + export status |
+| `labels.csv` | Compact provenance / CLIP / GPT labels |
+| `missing_sources.csv` | Accepted rows with unresolved image paths |
+
+**GPT triage mapping:**
+
+| `vision_decision` | `decision` | Notes |
+|-------------------|------------|-------|
+| `accept_candidate` | `accept` | Strong accept |
+| `review` | `accept` | Exported for now; `notes` flags `review->accept` |
+| `reject` | `reject` | Hard failures only |
+| `error` | blank | API/parse/image errors â€” re-run with `--only-pending` |
+
+**PowerShell â€” continue GPT review (all pending + error rows):**
+
+```powershell
+python code/scripts/utils/gpt_review_places365_backgrounds.py `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --only-pending
+```
+
+**PowerShell â€” visualize accept/reject decisions:**
+
+```powershell
+python code/scripts/utils/visualize_gpt_review_decisions.py `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --output-dir outputs\contact_sheets\gpt_review_qa `
+  --split decision
+```
+
+**PowerShell â€” visualize vision triage (incl. errors):**
+
+```powershell
+python code/scripts/utils/visualize_gpt_review_decisions.py `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --output-dir outputs\contact_sheets\gpt_review_qa `
+  --split vision_decision
+```
+
+**PowerShell â€” export accepted images:**
+
+```powershell
+python code/scripts/utils/export_places365_final_accepts.py `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --output-root data\processed\backgrounds_places365_final_v1 `
+  --accepted-values accept accept_candidate `
+  --copy
+```
+
+**Verify category counts** â€” printed at end of export; or:
+
+```powershell
+python -c "import pandas as pd; p=r'data/processed/backgrounds_places365_final_v1/labels.csv'; df=pd.read_csv(p); print(df['final_category'].value_counts())"
+```
+
+### 2a-xiv. Places365 GPT-4o mini vision review (optional)
+
+**Triage assist** â€” GPT screens usable sky/open-air area for small-drone placement. Foreground content (buildings, trees, runway, coast) is expected. Uses `detail: low` vision input. Server-side STEP 3 correction upgrades mistaken `reject` when `usable_sky_region` is large/medium.
+
+| `vision_decision` | Manifest `decision` |
+|-------------------|---------------------|
+| `accept_candidate` | `accept` |
+| `review` | `accept` (notes flag `review->accept`) |
+| `reject` | `reject` |
+| `error` | blank (retry with `--only-pending`) |
+
+```powershell
+pip install -r requirements-gpt.txt
+
+python code/scripts/utils/gpt_review_places365_backgrounds.py `
+  --manifest data\processed\backgrounds_places365_final_review_manifest.csv `
+  --candidate-root C:\datasets\places365\backgrounds_clip_filtered `
+  --only-pending `
+  --make-contact-sheets
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--only-pending` | Review blank `decision` rows and `vision_decision=error` (ignored when `--overwrite`) |
+| `--overwrite` | Re-review rows that already have decisions |
+| `--max-images` | Pilot cap before full run |
+| `--reset-api-errors` | Clear `vision_decision=error` rows before reviewing |
+| `--make-contact-sheets` | QA sheets under `outputs/contact_sheets/gpt_review_qa/` |
+
+If the manifest is locked (Excel open), progress saves to `data/processed/places365_gpt_autosave.csv` â€” copy over the manifest when closed.
+
+See **Â§2a-xv** for export and full workflow commands.
+
+**Step 2 (optional) â€” SAM2 extraction via annotation CSV:**
+
+Use only when COCO segmentation is unavailable or for non-COCO sources. On Windows, add `--short-output-root`:
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type distractor \
+  --annotations data/processed/annotations/splits/coco_val2017_airplane.csv \
+  --image-root C:\datasets\coco2017\images\val2017 \
+  --output-dir data/processed/assets_distractors_coco_val2017 \
+  --short-output-root C:\datasets\coco2017\assets \
+  --class-column class_name \
+  --filename-column image_path \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns bbox_x bbox_y bbox_w bbox_h \
+  --use-sam2 \
+  --sam2-max-rows 10
+```
+
+Without `--short-output-root`:
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type distractor \
+  --annotations data/processed/annotations/coco_val2017_distractors_annotations.csv \
+  --image-root C:\datasets\coco2017\images\val2017 \
+  --output-dir data/processed/assets_distractors_coco_val2017 \
+  --class-column class_name \
+  --filename-column image_path \
+  --source-dataset-column source_dataset \
+  --bbox-format xywh --bbox-columns bbox_x bbox_y bbox_w bbox_h
+```
+
+Use class subfolders (`bird/`, `airplane/`, `kite/`) automatically when `--asset-type distractor`. Add `--use-sam2` for mask refinement (see BirdvsDrone2 Step 3).
+
+### 2b. Extract RGBA foreground assets
+
+**Quality warning:** current **toy threshold** assets from folder mode are **not final quality** (blurry edges, rectangular artifacts). Use them only for pipeline integration testing. **Do not train models** on threshold-extracted assets.
+
+**Annotation bbox mode** is the bridge from real datasets: crop objects from an annotations CSV, record provenance, and flag every asset `needs_sam2_refinement=True` until SAM/SAM2 mask extraction is added.
+
+**Bbox size vs viewpoint:** large source bboxes are often **useful** for high-quality asset extraction. The scene filter (`06_filter_flying_object_scenes.py`) rejects by **viewpoint** (ground-to-air / horizon vs top-down / product close-up), not by large size alone. Final object scale is set at synthetic generation time (`drone_size_px`).
+
+**Windows path length:** deep project paths (e.g. under `Documents\...\project_implementation\...`) can cause `FileNotFoundError` when saving PNGs even if folders exist (`MAX_PATH` ~260 chars). Prefer short dataset and output roots such as `C:\datasets\coco2017\assets` via `--short-output-root`. Save failures are recorded in metadata (`extraction_failed`, `extraction_error`) and do not stop the full extraction run.
+
+#### Mode A â€” Folder (toy debugging, threshold baseline)
+
+```bash
+python code/scripts/02_extract_assets.py folder --asset-type drone --input-dir data/raw/drones --output-dir data/processed/assets_drone
+python code/scripts/02_extract_assets.py folder --asset-type distractor --input-dir data/raw/distractors --output-dir data/processed/assets_distractors
+```
+
+Legacy shorthand (same as `folder`):
+
+```bash
+python code/scripts/02_extract_assets.py --asset-type drone --input-dir data/raw/drones --output-dir data/processed/assets_drone
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--asset-type drone` | Flat output by default; class subfolders only if input has class folders |
+| `--asset-type distractor` | Preserve `output-dir/<class>/` layout by default |
+| `--flat-output` | Write all PNGs directly under `--output-dir` |
+| `--no-remove-bg` | RGBA convert only (skip threshold removal) |
+
+#### Mode B â€” Annotation CSV (dataset-derived bridge)
+
+```bash
+python code/scripts/02_extract_assets.py annotate \
+  --asset-type distractor \
+  --annotations data/annotations/distractors.csv \
+  --image-root data/source/images \
+  --output-dir data/processed/assets_distractors \
+  --class-column class_name \
+  --filename-column filename \
+  --bbox-format xywh \
+  --bbox-columns x y w h \
+  --source-dataset VisDrone
+```
+
+Shorthand (omit subcommand when `--annotations` is set):
+
+```bash
+python code/scripts/02_extract_assets.py \
+  --asset-type drone \
+  --annotations data/annotations/drones.csv \
+  --image-root data/source/images \
+  --output-dir data/processed/assets_drone \
+  --bbox-format xyxy \
+  --bbox-columns x1 y1 x2 y2 \
+  --source-dataset CustomDroneSet
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--annotations` | CSV with one row per object bbox |
+| `--image-root` | Root for images referenced by `--filename-column` |
+| `--class-column` | Class label column (default: `class_name`) |
+| `--filename-column` | Image path column (default: `filename`) |
+| `--bbox-format` | `xywh` or `xyxy` |
+| `--bbox-columns` | Four column names (default: `x y w h` or `x1 y1 x2 y2`) |
+| `--source-dataset` | Dataset name for all rows in metadata |
+| `--source-dataset-column` | Per-row dataset column (overrides `--source-dataset`) |
+| `--class-subdirs` | Force class subfolders for drones (distractors: on by default) |
+| `--flat-output` | Flat layout for distractors |
+| `--use-sam2` | SAM2 box-prompt masks (see Step 3 in BirdvsDrone2 Â§2a-ii) |
+| `--short-output-root` | Write PNG assets under a short path; metadata stays under `--output-dir` (Windows) |
+| `--make-contact-sheet` | Checkerboard QA contact sheet of extracted PNGs |
+
+Without `--use-sam2`: load image â†’ crop bbox â†’ opaque rectangle (`extraction_method=bbox_crop`).
+With `--use-sam2`: expand bbox â†’ SAM2 mask â†’ RGBA alpha crop (`extraction_method=sam2_mask`); SAM2 failure â†’ `bbox_crop_fallback`.
+
+#### `asset_metadata.csv` (both modes)
+
+| Column | Description |
+|--------|-------------|
+| `asset_id` | Unique output stem |
+| `source_image` | Absolute path to source frame |
+| `source_dataset` | Optional dataset name |
+| `asset_type` | `drone` or `distractor` |
+| `asset_class` | Class label from folder or CSV |
+| `source_bbox` | JSON `[x,y,w,h]` (annotation mode; empty for folder mode) |
+| `output_path` | Written RGBA PNG |
+| `width`, `height` | Crop size |
+| `extraction_method` | `threshold_near_white`, `bbox_crop`, `sam2_mask`, `bbox_crop_fallback`, `sam2_mask_failed_save`, or `bbox_crop_failed_save` |
+| `needs_sam2_refinement` | `True` for bbox crops / SAM2 fallback; `False` for successful SAM2 or folder runs |
+| `extraction_failed` | `True` if PNG save failed (row kept for audit) |
+| `extraction_error` | Save exception message when `extraction_failed=True` |
+| `has_alpha` | Whether alpha channel has transparency |
+| `sam2_used` | Whether SAM2 produced the mask |
+| `sam2_model_size` | e.g. `tiny` when `--use-sam2` |
+| `sam2_box_prompt_xyxy` | JSON expanded box prompt `[x1,y1,x2,y2]` |
+| `mask_quality_label` | `accept`, `review`, or `reject` (SAM2 QA) |
+| `mask_quality_score` | Heuristic 0â€“1 score (optional QA signal) |
+| `mask_review_reasons` | Semicolon-separated QA reasons |
+| `mask_area_px` | Foreground pixels in crop |
+| `mask_area_ratio_in_crop` | `mask_area_px / (width*height)` |
+| `mask_bbox_x`, `mask_bbox_y`, `mask_bbox_w`, `mask_bbox_h` | Tight bbox of mask within crop |
+| `mask_bbox_area_ratio_in_crop` | Tight mask bbox area / crop area |
+| `mask_touches_top/bottom/left/right` | Whether mask touches crop edge |
+| `mask_num_touched_borders` | Count of touched crop borders (0â€“4) |
+| `needs_manual_review` | `True` for `review`/`reject` labels or SAM2 fallback |
+
+SAM2 QA contact sheets (checkerboard): `outputs/contact_sheets/sam2_assets_{accept,review,reject}.png`
+
+#### Mode C â€” Manual raw folders (unlabeled scene images â†’ SAM2)
+
+Use when you have **manually curated raw folders** of full-scene drone/bird/airplane images **without bbox labels**. The script proposes a bbox per image (YOLOv8n COCO pretrained when `ultralytics` is installed, otherwise a centered heuristic), runs SAM2, and writes transparent PNGs.
+
+**Expected raw input layout** (keep large folders outside git; symlink or copy into project):
+
+```text
+C:\datasets\manual_curated\backgrounds\     # 253 manually filtered backgrounds
+C:\datasets\manual_curated\drones\        # 119 raw drone scene images
+C:\datasets\manual_curated\birds\         # 109 raw bird scene images
+C:\datasets\manual_curated\airplanes\     # 102 raw airplane scene images
+```
+
+**Processed output layout:**
+
+```text
+data/processed/assets_pilot/drones_sam2/     # pilot runs first
+  images/
+  debug/                                       # per-image QA panels when --save-debug or --max-assets <= 20
+  asset_metadata.csv
+  qa_contact_sheet.png
+  qa_report.txt
+data/processed/assets/drones_sam2/             # full run later (do not overwrite pilot until QA passes)
+```
+
+**Windows path length:** if PNG saves fail with `[Errno 2] No such file or directory`, use `--short-output-root C:\datasets\assets_pilot` so PNGs write to a short path while metadata stays under `--output-dir`.
+
+**YOLO:** if `ultralytics` is not installed, the script prints a strong startup warning and uses `center_heuristic` only. Check `qa_report.txt` for `proposal_method` counts (`yolo_bird`, `yolo_airplane`, `largest_detection_fallback`, `center_heuristic`).
+
+**SAM2 masks:** multimask scoring picks the most object-like mask; plausible inverse masks are tried when the foreground mask looks like background (large area, border-touching).
+
+**Install optional deps:**
+
+```powershell
+pip install -r requirements-sam2.txt
+pip install -r requirements-yolo.txt   # better bbox proposals; optional
+```
+
+**Pilot extract (10 images each, debug panels on):**
+
+```powershell
+python code/scripts/utils/extract_manual_assets_sam2.py `
+  --input-dir C:\datasets\manual_curated\drones `
+  --output-dir data\processed\assets_pilot\drones_sam2 `
+  --asset-type drone --use-sam2 --sam2-model-size tiny --sam2-device auto `
+  --max-assets 10 --save-debug --make-contact-sheet `
+  --short-output-root C:\datasets\assets_pilot
+```
+
+**Full extract drones (after pilot QA):**
+  --input-dir C:\datasets\manual_curated\drones `
+  --output-dir data\processed\assets\drones_sam2 `
+  --asset-type drone `
+  --use-sam2 `
+  --sam2-model-size tiny `
+  --sam2-device auto `
+  --make-contact-sheet `
+  --contact-sheet-output data\processed\assets\drones_sam2\qa_contact_sheet.png `
+  --qa-report-output data\processed\assets\drones_sam2\qa_report.txt
+```
+
+```powershell
+python code/scripts/utils/extract_manual_assets_sam2.py `
+  --input-dir C:\datasets\manual_curated\birds `
+  --output-dir data\processed\assets\birds_sam2 `
+  --asset-type bird `
+  --use-sam2 --sam2-model-size tiny --sam2-device auto --make-contact-sheet
+
+python code/scripts/utils/extract_manual_assets_sam2.py `
+  --input-dir C:\datasets\manual_curated\airplanes `
+  --output-dir data\processed\assets\airplanes_sam2 `
+  --asset-type airplane `
+  --use-sam2 --sam2-model-size tiny --sam2-device auto --make-contact-sheet
+```
+
+**Pilot cap:** add `--max-images 20` before full runs.
+
+**Asset QA curation (recommended before generation):**
+
+After full SAM2 extraction, run automated QA curation to split assets into **accept**, **review**, and **reject** pools. The script uses extraction metadata plus PNG alpha heuristics (connected components, border touch, opaque-rectangle score). Class-specific strictness: **strict drones**, **medium birds**, **lenient airplanes**.
+
+Original extracted PNGs and raw images are **not modified or deleted** â€” curated folders contain copies (or symlinks with `--symlink`).
+
+```powershell
+python code/scripts/utils/curate_extracted_assets.py `
+  --metadata data\processed\assets\drones_sam2\asset_metadata.csv `
+  --output-dir data\processed\assets_curated\drones `
+  --asset-type drone `
+  --make-contact-sheets
+
+python code/scripts/utils/curate_extracted_assets.py `
+  --metadata data\processed\assets\birds_sam2\asset_metadata.csv `
+  --output-dir data\processed\assets_curated\birds `
+  --asset-type bird `
+  --make-contact-sheets
+
+python code/scripts/utils/curate_extracted_assets.py `
+  --metadata data\processed\assets\airplanes_sam2\asset_metadata.csv `
+  --output-dir data\processed\assets_curated\airplanes `
+  --asset-type airplane `
+  --make-contact-sheets
+```
+
+If path resolution fails (long Windows paths), add `--short-assets-root C:\datasets\assets_full\drone` (or `\bird`, `\airplane`).
+
+**Outputs per run** (`data/processed/assets_curated/<class>/`):
+
+| Output | Description |
+|--------|-------------|
+| `accept/`, `review/`, `reject/` | Copied PNG assets by QA label |
+| `asset_metadata_curated.csv` | Full metadata + QA columns |
+| `asset_metadata_{accept,review,reject}.csv` | Split metadata by final label |
+| `contact_sheet_{accept,review,reject}.png` | Checkerboard alpha previews (with `--make-contact-sheets`) |
+
+**QA columns added:** `qa_auto_label`, `qa_auto_reasons`, `qa_final_label`, `qa_final_notes`, `resolved_asset_path`, alpha stats (`alpha_area_ratio`, `alpha_component_count`, â€¦), `curated_copy_path`.
+
+**Manual override:** edit `qa_final_label` (`accept` / `review` / `reject`) in `asset_metadata_curated.csv`, then re-run the same command **without** `--overwrite` â€” manual labels are preserved and copies are refreshed.
+
+**Legacy quick filter** (quality_label only, no accept/review/reject split):
+
+```powershell
+python code/scripts/utils/filter_extracted_assets.py `
+  --metadata data\processed\assets\drones_sam2\asset_metadata.csv
+```
+
+The generator skips assets where `quality_label` (or `mask_quality_label`) is `reject` when `asset_metadata.csv` is configured.
+
+**`asset_metadata.csv` fields (manual extraction):** `asset_id`, `asset_type`, `source_image`, `output_path`, `extraction_method`, `bbox_x/y/w/h`, `mask_area`, `asset_width`, `asset_height`, `quality_label`, `notes`, plus SAM2 QA aliases (`mask_quality_label`, `mask_area_px`, â€¦).
+
+Automatic `quality_label` values: `accept` | `review` | `reject` (conservative; always allow manual override).
+
+### Final asset pack + smoke generation (curated v2)
+
+After manual QA (`qa_final_label` in curated metadata), export a **canonical final pack** for generation:
+
+| Final folder | Contents |
+|--------------|----------|
+| `data/processed/assets_final/drones/images/` | Gemini-manual drone PNGs |
+| `data/processed/assets_final/birds/images/` | QA-approved birds (`qa_final_label=accept`) |
+| `data/processed/assets_final/airplanes/images/` | QA-approved airplanes |
+| `data/processed/backgrounds_final/images/` | 253 approved backgrounds |
+
+Each asset class has `asset_metadata_final.csv`; backgrounds have `backgrounds_metadata_final.csv`.
+
+**QA approval rule (explicit):**
+
+1. If `qa_final_label` is non-empty â†’ **authoritative** (human-reviewed).
+2. Else fall back to `quality_label`, then `mask_quality_label`.
+3. Final export includes only rows whose effective label is **`accept`**.
+
+Drones are exported from `data/processed/assets_curated/extracted drones/` (no SAM2 metadata; all PNGs treated as manually approved).
+
+**Important:** Gemini drone PNGs are often **fully opaque** (no real alpha). Before export, run the rembg alpha-fix pass below so the generator pastes real cutouts instead of rectangles.
+
+#### Gemini drone alpha fix (rembg)
+
+Opaque Gemini extractions must be converted to transparent RGBA PNGs before compositing.
+
+```powershell
+pip install -r requirements-rembg.txt
+
+python code/scripts/utils/fix_gemini_drone_transparency.py `
+  --input-dir "data\processed\assets_curated\extracted drones" `
+  --output-dir "data\processed\assets_curated\extracted_drones_alpha" `
+  --metadata-out "data\processed\assets_curated\extracted_drones_alpha\asset_metadata_alpha.csv" `
+  --report-out "outputs\reports\gemini_drone_alpha_fix_report.txt" `
+  --make-contact-sheet `
+  --contact-sheet-output "outputs\contact_sheets\gemini_drones_alpha_fix_qa.png"
+```
+
+**Inspect:** `outputs/contact_sheets/gemini_drones_alpha_fix_qa.png` (original | checkerboard converted per tile).
+
+**Re-export final drones** after QA (does not overwrite birds/airplanes/backgrounds):
+
+```powershell
+python code/scripts/utils/export_final_assets.py `
+  --drones-source "data\processed\assets_curated\extracted_drones_alpha"
+```
+
+Pilot cap: add `--max-images 5` to the alpha-fix script.
+
+**Step 1 â€” Export final assets (all classes):**
+
+```powershell
+python code/scripts/utils/export_final_assets.py `
+  --drones-source "data\processed\assets_curated\extracted drones" `
+  --birds-metadata data\processed\assets_curated\birds\asset_metadata_curated.csv `
+  --airplanes-metadata data\processed\assets_curated\airplanes\asset_metadata_curated.csv `
+  --backgrounds-source C:\datasets\backgrounds
+```
+
+**Step 2 â€” Validate:**
+
+```powershell
+python code/scripts/utils/validate_final_asset_pack.py `
+  --report outputs\reports\final_asset_pack_validation.txt
+```
+
+**Step 3 â€” Smoke test (~300 images, 3 subsets, same background pool):**
+
+`configs/smoke_curated_v2.yaml` generates:
+
+| Subset | Count |
+|--------|-------|
+| `synthetic_drone_positive` | 100 |
+| `synthetic_distractor_only` (bird + airplane) | 100 |
+| `synthetic_drone_plus_distractor` (bird + airplane) | 100 |
+
+```powershell
+python code/scripts/03_generate_synthetic.py --config configs/smoke_curated_v2.yaml
+python code/scripts/04_visualize_samples.py --config configs/smoke_curated_v2.yaml --bbox-thickness 3 --qa-mode
+python code/scripts/05_dataset_summary.py --config configs/smoke_curated_v2.yaml
+```
+
+**Outputs:** `data/synthetic/smoke_curated_v2/{images,labels,metadata.csv}`
+
+Config uses `input.require_accept_label: true` so generation only loads `qa_final_label=accept` rows from final metadata.
+
+#### Upper-sky placement (smoke_curated_v3)
+
+Smoke v2 placed objects across the full frame; many ended up on grass, buildings, or roads. **v3** adds conservative `placement.mode: upper_sky` â€” objects are sampled in the upper ~55% of the image with overlap avoidance in mixed scenes.
+
+```powershell
+python code/scripts/03_generate_synthetic.py --config configs/smoke_curated_v3_upper_sky.yaml
+python code/scripts/04_visualize_samples.py --config configs/smoke_curated_v3_upper_sky.yaml --bbox-thickness 3 --qa-mode
+python code/scripts/05_dataset_summary.py --config configs/smoke_curated_v3_upper_sky.yaml
+```
+
+**Inspect:** `outputs/contact_sheets/smoke_curated_v3_upper_sky_contact_sheet_qa.png` â€” objects should sit in upper/mid sky; mixed scenes should not have severe bbox overlap.
+
+**Config block** (`placement:` in YAML):
+
+| Key | Default (v3) | Purpose |
+|-----|----------------|---------|
+| `mode` | `upper_sky` | Restrict placement to upper region (`legacy` = old sky_top_fraction) |
+| `y_max_fraction` | `0.55` | Keep objects out of lower ground/building area |
+| `avoid_overlap` | `true` | Mixed scenes reject high IoU / close centers |
+| `max_iou` | `0.05` | Max allowed droneâ€“distractor IoU |
+| `min_object_distance_px` | `20` | Min center distance in mixed scenes |
+
+`configs/smoke_curated_v2.yaml` is unchanged (legacy placement). Run full benchmark generation only after v3 smoke QA passes.
+
+#### Background QA + sky-approved pool (smoke_curated_v4)
+
+v3 **upper_sky** placement improved where objects land, but many backgrounds in `backgrounds_final` still lack enough plausible sky (trees, buildings, ground dominate). The next step is **manual background QA** on the curated pool, then generation from **sky-approved** backgrounds only.
+
+**Workflow:**
+
+```powershell
+# 1) Scan backgrounds_final and create/update QA metadata (preserves manual qa_final_label)
+python code/scripts/utils/init_background_qa.py --background-dir data/processed/backgrounds_final/images
+
+# 2) Contact sheets for visual review (paginated if >48 tiles)
+python code/scripts/utils/make_background_qa_contact_sheets.py --split-by-label
+
+# 3) Edit qa_final_label in CSV: accept | review | reject
+#    Optional: set background_category (clear_upper_sky, cloudy_sky, â€¦)
+
+# 4) Export accept-only pool
+python code/scripts/utils/export_sky_approved_backgrounds.py
+
+# 5) Validate export
+python code/scripts/utils/validate_sky_approved_backgrounds.py
+
+# 6) v4 smoke (same assets/placement as v3, sky-approved backgrounds)
+python code/scripts/03_generate_synthetic.py --config configs/smoke_curated_v4_sky_backgrounds.yaml
+python code/scripts/04_visualize_samples.py --config configs/smoke_curated_v4_sky_backgrounds.yaml --bbox-thickness 3 --qa-mode
+python code/scripts/05_dataset_summary.py --config configs/smoke_curated_v4_sky_backgrounds.yaml
+```
+
+| Path | Purpose |
+|------|---------|
+| `data/processed/backgrounds_curated/background_metadata_curated.csv` | Master QA sheet (`qa_final_label` is authoritative) |
+| `outputs/contact_sheets/backgrounds_qa_all_page_*.png` | Background review tiles |
+| `data/processed/backgrounds_sky_approved/images/` | Exported accept-only backgrounds |
+| `data/processed/backgrounds_sky_approved/backgrounds_metadata_final.csv` | Metadata for generation (`background_category` â†’ `background_type`) |
+| `data/synthetic/smoke_curated_v4_sky_backgrounds/` | v4 smoke output |
+| `outputs/contact_sheets/smoke_curated_v4_sky_backgrounds_contact_sheet_qa.png` | Synthetic visual QA |
+
+**Auto heuristics** (`qa_auto_label` / `qa_auto_reasons`) are suggestions only â€” upper-half sky color/texture checks from `background_filter`. When unsure, default is **review**, not reject. Re-run init **without** `--overwrite` after editing the CSV so manual labels are preserved.
+
+**Accept criteria (summary):** large clear/cloudy/gray sky, horizon with significant sky above, sky above trees/buildings, airport/runway with sky. **Reject:** mostly ground/forest/facade/rail/indoor/low-sky scenes where upper_sky placement still hits non-sky. **Review:** ambiguous or useful later for hard contextual subsets.
+
+`configs/smoke_curated_v2.yaml` and `configs/smoke_curated_v3_upper_sky.yaml` are unchanged. Scale to full v1 only after v4 smoke contact-sheet QA passes.
+
+#### Full Curated v1 Dataset
+
+First **full benchmark** after smoke QA. Uses the same pipeline as `smoke_curated_v4_sky_backgrounds` (final assets, sky-approved backgrounds, `upper_sky` placement) at production scale.
+
+| Item | Value |
+|------|-------|
+| Config | `configs/full_curated_v1.yaml` |
+| Total images | **3600** |
+| Subsets | `synthetic_drone_positive` 1200, `synthetic_distractor_only` 1200, `synthetic_drone_plus_distractor` 1200 |
+| Stress grid | size 8/15/30/60 px Ã— noise 0/10/20 Ã— blur none/mild = **24 cells** (~50 images/cell/subset with `balanced_marginals`) |
+| Assets | `assets_final` drones/birds/airplanes + `backgrounds_sky_approved` |
+| Output | `data/synthetic/full_curated_v1/` (images, labels, metadata.csv, config_snapshot.yaml) |
+
+**Preflight** (run before first full generation):
+
+```powershell
+python code/scripts/utils/validate_final_asset_pack.py
+python code/scripts/utils/validate_sky_approved_backgrounds.py
+```
+
+**Generate, visualize, summarize:**
+
+```powershell
+python code/scripts/03_generate_synthetic.py --config configs/full_curated_v1.yaml
+python code/scripts/04_visualize_samples.py --config configs/full_curated_v1.yaml --bbox-thickness 3 --qa-mode --subset-sheets
+python code/scripts/05_dataset_summary.py --config configs/full_curated_v1.yaml
+```
+
+**QA outputs:** `outputs/contact_sheets/full_curated_v1_contact_sheet_qa.png`, `full_curated_v1_contact_sheet_crops_qa.png`, optional per-subset `full_curated_v1_{drone_positive,distractor_only,drone_plus_distractor}_qa.png`, summary `outputs/reports/full_curated_v1_dataset_summary.txt`.
+
+Smoke configs and `data/synthetic/smoke_curated_*` outputs are **not** overwritten (separate output directory).
+
+#### Detector Evaluation on full_curated_v1
+
+**Goal:** Compare detector families on the same 3600-image stress-test benchmark and report **recall by controlled conditions** (size, noise, blur, subset, distractor type) plus **false-positive rate** on distractor-only images.
+
+| Model | Type | Notes |
+|-------|------|-------|
+| `yolo_latest` | Ultralytics YOLO | Auto-selects `yolo11n.pt` â†’ `yolo11s.pt` â†’ `yolov8n.pt` (Ultralytics 8.4.x) |
+| `rtdetr` | Ultralytics RT-DETR | Auto-selects `rtdetr-l.pt` |
+| `grounding_dino` | GroundingDINO (optional) | Open-vocabulary; text prompts (`drone`, `quadcopter`, â€¦) |
+
+**DINO clarification:** DINOv2 is a **feature backbone**, not a box detector. This project uses **GroundingDINO** for open-vocabulary detection. It is **disabled by default** until weights are installed.
+
+**Install (minimum â€” YOLO + RT-DETR):**
+
+```powershell
+pip install -r requirements.txt
+pip install -r requirements-eval.txt
+```
+
+**Optional GroundingDINO** (manual â€” not in pip by default):
+
+1. Clone [IDEA-Research/GroundingDINO](https://github.com/IDEA-Research/GroundingDINO) and install per upstream README.
+2. Download `groundingdino_swint_ogc.pth` + config `.py`.
+3. Set paths in `configs/eval_full_curated_v1.yaml` (`grounding_dino_config`, `grounding_dino_checkpoint`) and `enabled: true`.
+
+**Config:** `configs/eval_full_curated_v1.yaml`
+
+**Metrics:**
+
+- **Recall** (target-present images): fraction with â‰¥1 matched drone-like box at IoU â‰¥ threshold.
+- **IoU â‰¥ 0.5** â€” primary (COCO-style).
+- **IoU â‰¥ 0.25** â€” tiny-object-tolerant secondary metric (8â€“15 px drones).
+- **False-positive image rate** (distractor-only): fraction with â‰¥1 drone-like prediction when GT is empty.
+
+**Drone-like policy:** Only class names in `evaluation.drone_like_classes` count (`drone`, `quadcopter`, `unmanned aerial vehicle`). GroundingDINO prompt boxes always count. **Generic COCO YOLO/RT-DETR checkpoints have no `drone` class** â€” predictions are saved, but drone recall is **not meaningful** until a fine-tuned drone checkpoint is used. Bird/airplane are **not** treated as drone.
+
+**Smoke evaluation:**
+
+```powershell
+python code/scripts/eval/run_detectors.py --config configs/eval_full_curated_v1.yaml --models yolo_latest --max-images 30
+python code/scripts/eval/evaluate_detector_predictions.py --config configs/eval_full_curated_v1.yaml --predictions outputs/evaluation/full_curated_v1/predictions/yolo_latest_predictions.csv
+```
+
+**Full evaluation:**
+
+```powershell
+python code/scripts/eval/run_detectors.py --config configs/eval_full_curated_v1.yaml --models yolo_latest rtdetr
+python code/scripts/eval/evaluate_detector_predictions.py --config configs/eval_full_curated_v1.yaml --all-predictions
+
+# Optional (after GroundingDINO install):
+python code/scripts/eval/run_detectors.py --config configs/eval_full_curated_v1.yaml --models grounding_dino
+```
+
+**Outputs:**
+
+| Path | Contents |
+|------|----------|
+| `outputs/evaluation/full_curated_v1/predictions/{model}_predictions.csv` | Raw boxes |
+| `outputs/evaluation/full_curated_v1/metrics/summary_by_model.csv` | Global recall / FP rate |
+| `outputs/evaluation/full_curated_v1/metrics/recall_by_*.csv` | Grouped tables |
+| `outputs/evaluation/full_curated_v1/plots/*.png` | Robustness curves / heatmaps |
+| `outputs/evaluation/full_curated_v1/run_info.json` | Weights used, class-name warnings |
+| `outputs/evaluation/full_curated_v1/visualizations/{model}_prediction_qa.png` | Prediction overlay QA |
+
+#### Final-clean experiment (Colab, June 2026)
+
+**Protocol:** Train YOLO11n + RT-DETR-L on a final-clean **training** split (`synthetic_drone_positive`, `synthetic_distractor_only`, `synthetic_drone_plus_distractor`). Evaluate **GroundingDINO** (zero-shot), fine-tuned YOLO, and fine-tuned RT-DETR on held-out **test** subsets: `test_drone_positive`, `test_hard_negative`, `test_mixed`.
+
+**Authoritative metrics (reporting):**  
+`results/combined_metrics/summary_by_model_by_eval_subset_CORRECTED.csv`  
+(local full dump also under `outputs/evaluation/final_clean_full_curated_v1/combined_metrics/`)
+
+Do **not** use `summary_by_model_by_eval_subset.csv` â€” the uncorrected file overestimated YOLO recall by denominating recall only over images where YOLO produced predictions.
+
+See [`docs/github_vs_drive.md`](docs/github_vs_drive.md) for what from Colab/Drive belongs on GitHub (weights stay on Drive).
+
+| Model | Recall@0.25 pos. | Recall@0.50 pos. | Recall@0.25 mixed | Recall@0.50 mixed | Hard-neg FP rate | Hard-neg FP boxes |
+|-------|------------------:|------------------:|------------------:|------------------:|-----------------:|------------------:|
+| GroundingDINO | 0.622 | 0.539 | 0.450 | 0.372 | 1.000 | 1873 |
+| RT-DETR-L | 0.817 | 0.700 | 0.828 | 0.694 | 1.000 | 7218 |
+| YOLO11n | 0.728 | 0.683 | 0.722 | 0.678 | 0.344 | 107 |
+
+**Interpretation:** RT-DETR-L maximizes recall but over-detects on distractor-only images. YOLO11n trades some recall for far better selectivity. GroundingDINO is a useful zero-shot baseline with lower recall and high distractor sensitivity.
+
+Full write-up: [`docs/final_clean_experiment_results.md`](docs/final_clean_experiment_results.md)
+
+**Artifacts:**
+
+| Path | Description |
+|------|-------------|
+| `outputs/training/yolo/yolo11n_drone_colab-9/` | YOLO training (`args.yaml`, `results.csv`, `weights/best.pt`) |
+| `outputs/training/rtdetr/rtdetr_l_drone_colab-9/` | RT-DETR training |
+| `outputs/evaluation/final_clean_full_curated_v1/test_*/predictions/` | Per-model prediction CSVs |
+| `outputs/evaluation/final_clean_full_curated_v1/combined_metrics/` | Combined summary tables |
+
+**Re-import from Colab zips** (`project/results/`):
+
+```powershell
+python code/scripts/utils/import_final_clean_colab_results.py
+```
+
+**GroundingDINO setup** (DINOv2 is not a box detector â€” use GroundingDINO):
+
+```powershell
+python code/scripts/utils/setup_grounding_dino.py --print-steps
+python code/scripts/utils/setup_grounding_dino.py
+```
+
+After install, set `grounding_dino.enabled: true` on the model entry (or top-level `grounding_dino:` block) in `configs/eval_full_curated_v1.yaml`, then:
+
+```powershell
+python code/scripts/eval/run_detectors.py --config configs/eval_full_curated_v1.yaml --models grounding_dino --max-images 30
+python code/scripts/eval/evaluate_detector_predictions.py --config configs/eval_full_curated_v1.yaml --predictions outputs/evaluation/full_curated_v1/predictions/grounding_dino_predictions.csv
+python code/scripts/eval/visualize_predictions.py --config configs/eval_full_curated_v1.yaml --predictions outputs/evaluation/full_curated_v1/predictions/grounding_dino_predictions.csv
+```
+
+#### Google Colab GPU (`run_gpu.ipynb`)
+
+Use **Google Colab** (Runtime â†’ GPU) instead of RunPod when local CPU is too slow.
+
+1. Open `run_gpu.ipynb` in Colab (Runtime â†’ GPU).
+2. **Dataset:** downloaded via `gdown` (no Drive mount) â€” folder ID in the config cell.
+3. **Project code:** upload `drone_project_code.zip` when prompted (scripts, `src/`, `configs/`, `requirements-colab.txt`) or set a Drive folder ID for `gdown`.
+4. Run all cells â€” train/val/test split, YOLO + RT-DETR fine-tune, GroundingDINO zero-shot, metrics.
+5. Download `drone_smoke_results.zip` from the Colab Files panel.
+
+Colab eval config: `configs/eval_colab_full_curated_v1.yaml`  
+Colab deps: `pip install -r requirements-colab.txt`
+
+Default **smoke mode** (`SMOKE_MODE=True`): 300-image split (70/15/15), 100-image eval cap, 5 YOLO / 3 RT-DETR epochs.
+
+**Leakage warning:** the default Colab split is derived from `full_curated_v1` â€” fine for pipeline verification only.
+
+#### Training Drone-Capable Detectors
+
+Generic COCO **YOLO11n** / **RT-DETR-L** lack a `drone` class. Fine-tune on drone-labeled YOLO data, then register `best.pt` in `configs/eval_full_curated_v1.yaml`.
+
+**Scientific protocol (recommended):**
+
+1. **Freeze** `full_curated_v1` as the benchmark â€” do not train on it for final reported results.
+2. **Train** on real drone YOLO data (`configs/train_real_drones_placeholder.yaml`) **or** a **separate** synthetic train set (different `split` name / seed).
+3. **Evaluate** all models on `full_curated_v1` only.
+4. **Compare** fine-tuned YOLO, fine-tuned RT-DETR, and GroundingDINO zero-shot.
+
+**Create YOLO split** (smoke or full â€” leakage warning if source is `full_curated_v1`):
+
+```powershell
+python code/scripts/train/create_ultralytics_dataset_yaml.py `
+  --dataset-root data/synthetic/full_curated_v1 `
+  --output-root data/training/full_curated_v1_smoke_split `
+  --max-images 300 --seed 42
+```
+
+**YOLO smoke train** (1 epoch, CPU-friendly check):
+
+```powershell
+python code/scripts/train/train_yolo.py `
+  --data data/training/full_curated_v1_smoke_split/dataset.yaml `
+  --weights yolo11n.pt --epochs 1 --imgsz 640 --batch 4 --device cpu `
+  --name yolo11n_drone_smoke
+```
+
+**RT-DETR training** (GPU recommended; very slow on CPU):
+
+```powershell
+python code/scripts/train/train_rtdetr.py `
+  --data data/training/full_curated_v1_smoke_split/dataset.yaml `
+  --weights rtdetr-l.pt --epochs 20 --imgsz 640 --batch 4 --device auto `
+  --name rtdetr_l_drone_smoke
+```
+
+**Evaluate fine-tuned checkpoint** â€” enable `yolo11n_drone_finetuned` in eval YAML, then:
+
+```powershell
+python code/scripts/eval/run_detectors.py --config configs/eval_full_curated_v1.yaml --models yolo11n_drone_finetuned
+python code/scripts/eval/evaluate_detector_predictions.py --config configs/eval_full_curated_v1.yaml --predictions outputs/evaluation/full_curated_v1/predictions/yolo11n_drone_finetuned_predictions.csv
+```
+
+Training outputs: `outputs/training/yolo/{name}/weights/best.pt`, `outputs/training/rtdetr/{name}/weights/best.pt`.
+
+### Foreground asset sources (`configs/pilot.yaml`)
+
+The generator reads drone/distractor paths from config via **`input.asset_source`**:
+
+| `asset_source` | Use case | Drone path | Distractor path |
+|----------------|----------|------------|-----------------|
+| `processed` (default) | **Intended interface** â€” RGBA assets from `02_extract_assets.py` | `data/processed/assets_drone/` | `data/processed/assets_distractors/<class>/` |
+| `raw` | **Toy debugging only** â€” skip extraction, paste raw JPG/PNG crops | `data/raw/drones/` | `data/raw/distractors/<class>/` |
+
+```yaml
+input:
+  asset_source: processed   # or raw
+  raw:
+    drones_dir: data/raw/drones
+    distractors_dir: data/raw/distractors
+  processed:
+    drones_dir: data/processed/assets_drone
+    distractors_dir: data/processed/assets_distractors
+```
+
+**Important:** do **not train** on assets with `needs_sam2_refinement=True` or `needs_manual_review=True`. Review SAM2 contact sheets before compositing or training.
+
+### 3. Generate synthetic pilot data
+
+Uses foreground paths from `configs/pilot.yaml` (`input.asset_source`: `processed` by default). Run step 2b first when using processed assets.
+
+To debug with raw crops directly, set `input.asset_source: raw` in `configs/pilot.yaml`.
+
+From the project root:
+
+```bash
+python code/scripts/03_generate_synthetic.py --config configs/pilot.yaml
+```
+
+### 3b. Final v1 synthetic drone-positive grid
+
+**Frozen evaluation split (not generated here):** COCO real hard negatives at `C:\datasets\coco2017\hard_negatives_strict` (220 images, `subset=hard_negative_real`, `target_present=false`). Merge with synthetic metadata at **evaluation** time for false-identification testing.
+
+**`configs/final_v1.yaml`** builds **1200 synthetic drone-positive images only** (`subset=drone_positive_synthetic`, `target_present=true`) for controlled identification boundary testing. No distractor cutouts, no `mixed_challenge`, no COCO frames in the generator.
+
+| Variable | Levels |
+|----------|--------|
+| `object_size_px` | 8, 15, 30, 60 |
+| `gaussian_noise_sigma` | 0, 10, 20 |
+| `blur_level` | none, mild |
+| `background_type` | `clear_upper_sky`, `cloudy_sky`, `sky_with_natural_landscape`, `sky_with_built_environment` |
+
+**Backgrounds:** `data/processed/backgrounds_coco_sky_strict` (strict COCO sky filter, Â§2a-ix), with short-path fallback `C:/datasets/coco2017/backgrounds_coco_sky_strict`.
+
+**Drone assets:** `data/processed/assets_drone_birdvsdrone2` (update `input.processed.drones_dir` in the YAML if your approved SAM2 pool differs).
+
+**Sampling:** marginal balance across all four variable axes (`variable_sampling: balanced_marginals`), `seed: 42`.
+
+```bash
+python code/scripts/03_generate_synthetic.py --config configs/final_v1.yaml
+python code/scripts/04_visualize_samples.py --config configs/final_v1.yaml --bbox-thickness 3 --qa-mode
+python code/scripts/05_dataset_summary.py --config configs/final_v1.yaml
+```
+
+**Outputs:** `data/synthetic/final_v1/{images,labels,metadata.csv}` with `foreground_asset_path`, `foreground_asset_id`, `foreground_source_dataset`, `generation_seed`, and full stress-test fields.
+
+### 3c. Smoke-test synthetic dataset (manual SAM2 assets)
+
+**`configs/smoke_manual_v1.yaml`** â€” 220-image integration test across three synthetic subsets (not the final benchmark):
+
+| Subset | Count |
+|--------|-------|
+| `synthetic_drone_positive` | 100 |
+| `synthetic_distractor_only` (bird) | 30 |
+| `synthetic_distractor_only` (airplane) | 30 |
+| `synthetic_drone_plus_distractor` (drone + bird) | 30 |
+| `synthetic_drone_plus_distractor` (drone + airplane) | 30 |
+
+Requires SAM2-extracted assets (Â§2b Mode C) and curated backgrounds. Update paths in the YAML to match your folders.
+
+```powershell
+python code/scripts/03_generate_synthetic.py --config configs/smoke_manual_v1.yaml
+python code/scripts/04_visualize_samples.py --config configs/smoke_manual_v1.yaml --bbox-thickness 3 --qa-mode
+python code/scripts/05_dataset_summary.py --config configs/smoke_manual_v1.yaml
+```
+
+**Outputs:** `data/synthetic/smoke_manual_v1/{images,labels,metadata.csv}` with extended fields (`drone_present`, `distractor_type`, `drone_size_px`, `distractor_size_px`, `background_category`, â€¦).
+
+### 4. Visual QA audit (contact sheets)
+
+Regenerate metadata first if upgrading from an older schema (`03_generate_synthetic.py`).
+
+**Recommended full QA** (`--qa-mode`):
+
+```bash
+python code/scripts/04_visualize_samples.py --config configs/pilot.yaml --bbox-thickness 3 --qa-mode
+```
+
+- **Green box + green center dot** = drone (`target_bbox`), small label `drone` placed beside/below tiny objects
+- **Orange box + orange center dot** = distractor (`distractor_bboxes`), label = class (`bird`, `kite`, `airplane`, `cloud_blob`, â€¦)
+- `mixed_challenge`: both drone and distractor boxes on the full sheet; **separate zoom crops** per object
+- Contact sheet titles: `subset`, `pasted_object_summary`, `background_filename`, asset ids
+- **Crop sheet**: bbox + center dot on the image; `object_type`, `class`, `asset_id`, and `bbox` in the **tile title** (not drawn on the crop)
+- **Crops are written by default** (no `--write-crops` flag); pass `--no-write-crops` to skip the crops PNG
+
+**Outputs with `--qa-mode`:**
+
+| File | Description |
+|------|-------------|
+| `outputs/contact_sheets/pilot_contact_sheet_qa.png` | Annotated grid (labeled boxes) |
+| `outputs/contact_sheets/pilot_contact_sheet_crops_qa.png` | Per-object zoom crops with metadata captions |
+| `outputs/reports/pilot_audit.html` | Row-wise HTML audit: full image, target/distractor crops, bbox fields |
+
+**Standard run** (no `--qa-mode`): same labeled overlays and crop captions, but writes `pilot_contact_sheet.png` / `pilot_contact_sheet_crops.png` (no HTML).
+
+```bash
+python code/scripts/04_visualize_samples.py --config configs/pilot.yaml
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--qa-mode` | off | `*_qa.png` contact/crops + `pilot_audit.html` |
+| `--bbox-thickness` | `3` | BBox line thickness (auto-thicker for tiny boxes) |
+| `--crop-pad-px` | `16` | Padding around bbox in crop tiles |
+| `--crop-size-px` | `200` | Crop tile size in pixels |
+| `--html-rows` | `12` | Sample rows in HTML report (`--qa-mode`) |
+| `--no-write-crops` | off (crops **on**) | Skip the crops sheet |
+| `--no-qa` | off | Legacy: single ambiguous `bbox` overlay only |
+
+Use `--no-qa` only for comparing against old metadata.
+
+**Background sampling** (`configs/pilot.yaml` â†’ `generation.background_sampling`):
+
+- `uniform_by_file` (default if omitted): each background **file** equally likely â€” types with more files are oversampled.
+- `balanced_by_type`: sample `background_type` uniformly, then a random file within that type. Pilot config uses this by default.
+
+### 5. Dataset summary (sanity check)
+
+Reads `metadata.csv` (path from config unless overridden). Prints subset/variable counts, **audit sample rows** (`background_filename`, `target_bbox`, `distractor_bboxes`, `target_asset_id`, `distractor_asset_ids`), and the first 5 full rows; saves `outputs/reports/pilot_dataset_summary.txt`.
+
+```bash
+python code/scripts/05_dataset_summary.py --config configs/pilot.yaml
+```
+
+Optional: override the metadata path (default comes from `configs/pilot.yaml`):
+
+```bash
+python code/scripts/05_dataset_summary.py --config configs/pilot.yaml --metadata data/synthetic/pilot/metadata.csv
+```
+
+**Typical pilot workflow (no model training):**
+
+```bash
+python code/scripts/03_generate_synthetic.py --config configs/pilot.yaml
+python code/scripts/04_visualize_samples.py --config configs/pilot.yaml --bbox-thickness 3 --qa-mode
+python code/scripts/05_dataset_summary.py --config configs/pilot.yaml
+```
+
+Review `pilot_audit.html` and contact sheets: confirm green/orange boxes and crop labels match metadata (`target_asset_id`, `distractor_asset_ids`, `background_filename`).
+
+---
+
+## Pilot Code Reference
+
+| Path | Purpose |
+|------|---------|
+| `configs/pilot.yaml` | Pilot generation variables, paths, `asset_source`, subset ratios |
+| `configs/final_v1.yaml` | Final v1 drone-positive synthetic grid (1200 images, no COCO hard negatives) |
+| `requirements.txt` | Python dependencies for generation and visualization |
+| `src/drone_stress/config.py` | Load and validate YAML config |
+| `src/drone_stress/assets.py` | Discover images in raw folders |
+| `src/drone_stress/compositor.py` | Paste, noise, blur, bbox / YOLO helpers |
+| `src/drone_stress/generate.py` | Dataset generation loop and metadata writer |
+| `src/drone_stress/extract.py` | Folder threshold extraction, annotation bbox/SAM2 crops, contact sheet |
+| `src/drone_stress/background_filter.py` | Heuristic sky/horizon background features + classification |
+| `src/drone_stress/background_clip.py` | CLIP background relabeling + merge policy |
+| `src/drone_stress/sam2_extract.py` | SAM2 box predictor, mask QA, bbox expand helpers |
+| `src/drone_stress/scene_filter.py` | Viewpoint heuristics + optional CLIP merge for scene filter |
+| `code/scripts/06_filter_flying_object_scenes.py` | Filter annotation CSV (heuristic + optional `--use-clip`) |
+| `code/scripts/utils/split_filtered_annotations.py` | Split filtered CSV by disposition and class for extraction prep |
+| `code/scripts/utils/split_annotations_by_class.py` | Split any annotation CSV by `class_name` |
+| `code/scripts/utils/filter_coco_distractor_assets.py` | Semantic filter for COCO segmentation distractor assets |
+| `code/scripts/utils/filter_coco_hard_negatives.py` | Strict filter for COCO full-image hard negatives |
+| `code/scripts/utils/select_assets_by_keep_list.py` | Manual strict approval via asset_id keep-list |
+| `code/scripts/03_generate_synthetic.py` | CLI entry point for generation |
+| `code/scripts/04_visualize_samples.py` | QA contact sheets, per-object crops, optional HTML audit (`--qa-mode`) |
+| `src/drone_stress/qa_visualize.py` | Labeled bbox overlays, crop tiles, HTML audit builder |
+| `code/scripts/05_dataset_summary.py` | Prints and saves dataset summary text from `metadata.csv` |
+| `code/scripts/01_filter_backgrounds.py` | Heuristic + optional CLIP background curation |
+| `code/scripts/adapters/yolo_to_annotations.py` | Multi-class YOLO â†’ annotation CSV (BirdvsDrone2, etc.) |
+| `code/scripts/adapters/seraphim_yolo_to_annotations.py` | Single-class Seraphim shortcut |
+| `code/scripts/adapters/coco_to_annotations.py` | COCO instances JSON â†’ distractor annotation CSV (legacy) |
+| `code/scripts/adapters/coco_hard_negative_images.py` | COCO val full images â†’ real hard negatives (recommended) |
+| `code/scripts/adapters/coco_sky_backgrounds.py` | COCO val sky-visible backgrounds for compositing |
+| `code/scripts/adapters/airbirds_inspect.py` | AirBirds chunk diversity audit (temporal + phash) |
+| `code/scripts/adapters/places365_highres_prepare_backgrounds.py` | Places365 val_large high-res background candidates |
+| `code/scripts/utils/clip_filter_places365_backgrounds.py` | CLIP suitability filter for Places365 candidates |
+| `code/scripts/utils/finalize_places365_clip_backgrounds.py` | Manual final approval manifest for Places365 backgrounds |
+| `code/scripts/utils/gpt_review_places365_backgrounds.py` | GPT-4o mini vision review for Places365 manifest |
+| `code/scripts/utils/visualize_gpt_review_decisions.py` | GPT review accept/reject QA contact sheets |
+| `code/scripts/utils/export_places365_final_accepts.py` | Export accepted Places365 backgrounds + metadata |
+| `code/scripts/utils/extract_manual_assets_sam2.py` | SAM2 extraction from unlabeled manual raw folders |
+| `code/scripts/utils/curate_extracted_assets.py` | Automated QA curation: accept / review / reject pools |
+| `src/drone_stress/asset_curation.py` | Path resolution, alpha QA heuristics, curated copy + contact sheets |
+| `code/scripts/utils/export_final_assets.py` | Export final approved assets into assets_final / backgrounds_final |
+| `code/scripts/utils/fix_gemini_drone_transparency.py` | rembg batch alpha fix for opaque Gemini drone PNGs |
+| `src/drone_stress/alpha_audit.py` | Alpha stats, folder audit, long-path RGBA save |
+| `src/drone_stress/gemini_drone_alpha.py` | rembg conversion batch + QA contact sheet |
+| `code/scripts/utils/validate_final_asset_pack.py` | Validate final asset pack folders and metadata |
+| `src/drone_stress/final_asset_pack.py` | Final export, QA label resolution, validation logic |
+| `configs/smoke_curated_v2.yaml` | 300-image smoke test (3 synthetic subsets, final curated assets) |
+| `configs/smoke_curated_v3_upper_sky.yaml` | v3 smoke test with upper_sky placement |
+| `configs/smoke_curated_v4_sky_backgrounds.yaml` | v4 smoke test with sky-approved background pool |
+| `configs/full_curated_v1.yaml` | First full benchmark dataset (3600 images, 3 subsets) |
+| `src/drone_stress/background_qa.py` | Background QA metadata, heuristics, export, contact sheets |
+| `code/scripts/utils/init_background_qa.py` | Initialize `background_metadata_curated.csv` |
+| `code/scripts/utils/make_background_qa_contact_sheets.py` | Paginated background QA contact sheets |
+| `code/scripts/utils/export_sky_approved_backgrounds.py` | Export accept-only backgrounds to `backgrounds_sky_approved/` |
+| `code/scripts/utils/validate_sky_approved_backgrounds.py` | Validate sky-approved export pack |
+| `src/drone_stress/placement.py` | Upper-sky placement sampling + overlap checks |
+| `code/scripts/utils/filter_extracted_assets.py` | Filter assets by quality_label for generation |
+| `code/scripts/adapters/extract_coco_segmentation_assets.py` | COCO segmentation â†’ RGBA distractor assets (legacy) |
+| `code/scripts/02_extract_assets.py` | CLI: `folder` / `annotate` subcommands + legacy flags |
+| `code/scripts/07_visualize_extracted_assets.py` | SAM2 extracted PNG QA contact sheets from asset dirs |
+| `code/scripts/05_evaluate_predictions.py` | Redirect to `code/scripts/eval/` detector evaluation pipeline |
+| `code/scripts/eval/run_detectors.py` | Run YOLO / RT-DETR / GroundingDINO inference |
+| `code/scripts/eval/evaluate_detector_predictions.py` | Match predictions, grouped metrics, plots |
+| `code/scripts/eval/visualize_predictions.py` | GT vs prediction overlay contact sheets |
+| `code/scripts/utils/setup_grounding_dino.py` | GroundingDINO install validation + instructions |
+| `code/scripts/utils/import_final_clean_colab_results.py` | Import final-clean Colab zips from `project/results/` into `outputs/` |
+| `code/scripts/train/create_ultralytics_dataset_yaml.py` | Train/val/test split + dataset.yaml |
+| `code/scripts/train/train_yolo.py` | Ultralytics YOLO fine-tuning |
+| `code/scripts/train/train_rtdetr.py` | Ultralytics RT-DETR fine-tuning |
+| `configs/eval_full_curated_v1.yaml` | Evaluation config for full_curated_v1 |
+| `data/raw/README.md` | Raw folder layout instructions |
+
+---
+
+## Expected Outputs
+
+After a successful run of `03_generate_synthetic.py`:
+
+| Output | Description |
+|--------|-------------|
+| `data/synthetic/pilot/images/img_000001.png` â€¦ | 640Ã—640 composited RGB images (count = `generation.num_images` in config, default **150**) |
+| `data/synthetic/pilot/labels/img_000001.txt` â€¦ | YOLO labels: **drone class 0** for `drone_positive` and `mixed_challenge`; **empty** for `hard_negative` (distractor bbox only in metadata) |
+| `data/synthetic/pilot/metadata.csv` | One row per image with controlled variables, bbox, seed |
+
+After `04_visualize_samples.py` (with `--qa-mode`):
+
+| Output | Description |
+|--------|-------------|
+| `outputs/contact_sheets/pilot_contact_sheet_qa.png` | Grid with labeled green/orange boxes and center dots |
+| `outputs/contact_sheets/pilot_contact_sheet_crops_qa.png` | Per-object zoom crops (separate drone + distractor for `mixed_challenge`) |
+| `outputs/reports/pilot_audit.html` | Interactive row audit: full frame + crops + metadata columns |
+
+Without `--qa-mode`, the same overlays are written to `pilot_contact_sheet.png` and `pilot_contact_sheet_crops.png`.
+
+After `05_dataset_summary.py`:
+
+| Output | Description |
+|--------|-------------|
+| `outputs/reports/pilot_dataset_summary.txt` | Text summary: counts by subset/background/size/noise/blur/target_present/distractor_classes plus first 5 rows |
+
+After `seraphim_yolo_to_annotations.py`:
+
+| Output | Description |
+|--------|-------------|
+| `data/processed/annotations/seraphim_drone_annotations.csv` | Internal bbox annotations (`filename` relative to dataset root) |
+| `outputs/reports/seraphim_annotation_conversion_report.txt` | Conversion stats and filter summary |
+
+After `02_extract_assets.py`:
+
+| Output | Description |
+|--------|-------------|
+| `data/processed/assets_drone/*.png` | Extracted drone RGBA assets |
+| `data/processed/assets_distractors/<class>/*.png` | Extracted distractor RGBA assets per class |
+| `data/processed/assets_drone/asset_metadata.csv` | Provenance (`source_image`, `source_bbox`, `extraction_method`, â€¦) |
+| `data/processed/assets_distractors/asset_metadata.csv` | Provenance per distractor extraction run |
+
+Default subset mix (`configs/pilot.yaml`): 50% `drone_positive`, 30% `hard_negative`, 20% `mixed_challenge`.
+
+---
+
+## Label Format (Pilot)
+
+- **Binary drone identification mode** (default): YOLO files contain only the drone box when `target_present=true`.
+- Distractor boxes are in `metadata.csv` only (`distractor_bboxes`, `distractor_asset_ids`).
+- Class id for drone: `0` (see `classes.drone` in config).
+- **Distractor metadata consistency:** class, folder, `distractor_asset_ids`, and `distractor_bboxes` are written together at generation time.
+
+### How to visually audit the pilot dataset
+
+1. Run `03_generate_synthetic.py` then `04_visualize_samples.py --bbox-thickness 3 --qa-mode`.
+2. On each tile, check `pasted_object_summary` and colored boxes agree (green=drone, orange=distractor).
+3. Check `background_filename` / `background_type` against the visible background.
+4. Run `05_dataset_summary.py` and inspect audit rows for `target_bbox` vs `distractor_bboxes` by subset.
+5. For `mixed_challenge`, both green and orange boxes must appear.
+
+---
+
+## Current Implementation Status
+
+- [x] Create repository structure
+- [x] Add config file for pilot dataset (`configs/pilot.yaml`)
+- [x] Add final v1 drone-positive config (`configs/final_v1.yaml`)
+- [x] Add raw folder layout for backgrounds / drones / distractors (`data/raw/â€¦` + README)
+- [x] Background curation utility (`code/scripts/01_filter_backgrounds.py`, heuristic v1 + optional CLIP)
+- [ ] Add a small manual drone asset set (user-provided images)
+- [ ] Add a small manual distractor asset set (user-provided images)
+- [x] Implement synthetic dataset generator (`code/scripts/03_generate_synthetic.py`)
+- [x] Save `metadata.csv`
+- [x] Save YOLO-format labels
+- [x] Generate contact sheets for visual inspection (`code/scripts/04_visualize_samples.py`)
+- [x] Add dataset summary sanity check (`code/scripts/05_dataset_summary.py`)
+- [x] Toy folder RGBA extraction (`02_extract_assets.py folder`, threshold only)
+- [x] Annotation bbox crop extraction (`02_extract_assets.py annotate`, `bbox_crop` bridge)
+- [x] Flying-object scene filter (`code/scripts/06_filter_flying_object_scenes.py`, viewpoint not size)
+- [x] Optional CLIP pre-filter for scene filter (`--use-clip`, not ground truth)
+- [x] Purpose-aware CLIP merge policy (`--filter-purpose asset_extraction|real_eval`; preserves heuristic accepts for asset extraction, stricter `real_eval`)
+- [x] Split filtered annotations by disposition/class (`code/scripts/utils/split_filtered_annotations.py`)
+- [x] Generic YOLO adapter (`code/scripts/adapters/yolo_to_annotations.py`, multi-class via `data.yaml`)
+- [x] Seraphim YOLO adapter (`code/scripts/adapters/seraphim_yolo_to_annotations.py`)
+- [x] SAM2 mask extraction in annotate mode (`--use-sam2`, `sam2_mask`, mask QA labels + contact sheets)
+- [x] SAM2 extracted asset QA visualization (`code/scripts/07_visualize_extracted_assets.py`)
+- [ ] Ingest BirdvsDrone2 (user download + convert + SAM2 extract + visual QA)
+- [ ] Ingest Seraphim dataset (user download + convert + bbox crops + visual QA)
+- [ ] SAM2 batch re-run on existing bbox_crop metadata (`refine_assets_with_sam2` helper)
+- [ ] Run first YOLO baseline
+- [ ] Compute identification percentage
+- [ ] Compute false identification percentage
+- [ ] Plot first robustness curve
+
