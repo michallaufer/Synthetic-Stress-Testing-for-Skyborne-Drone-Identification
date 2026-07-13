@@ -43,13 +43,12 @@ Key published figures (more under `visuals/`):
 | Figure | File |
 |--------|------|
 | Recall vs drone size | [`visuals/recall_bars.png`](visuals/recall_bars.png) |
-| Hard-negative false positives | [`visuals/false_positive_boxes.png`](visuals/false_positive_boxes.png) |
 | Subset / condition charts | [`visuals/dataset_subsets.png`](visuals/dataset_subsets.png) |
 | Example prediction sheets | [`visuals/example_predictions/`](visuals/example_predictions/) |
 
 ![Recall vs drone size](visuals/recall_bars.png)
 
-![False positives on hard negatives](visuals/false_positive_boxes.png)
+Hard-negative false-positive rates are reported in the [Results](#results) table (FP image rate and FP box count). The single-model airplane-vs-bird FP bar chart is less informative when both rates are 1.0, so it is not shown here; the file remains under `visuals/false_positive_boxes.png` if needed.
 
 Pipeline / workflow diagrams from the slides can be exported into `visuals/` as `dataset_generation_pipeline.png` and `training_and_evaluation_workflow.png` when available. See also [`slides/final_presentation.pptx`](slides/final_presentation.pptx).
 
