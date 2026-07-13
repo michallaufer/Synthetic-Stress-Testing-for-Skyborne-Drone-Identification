@@ -6,10 +6,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import requests
-import runpod
-import urllib3
-from dotenv import load_dotenv
+try:
+    import requests
+    import runpod
+    import urllib3
+    from dotenv import load_dotenv
+except ImportError as exc:
+    raise SystemExit(
+        "Missing RunPod launcher dependencies. Install with:\n"
+        "  pip install -r requirements-runpod.txt\n"
+        f"Original error: {exc}"
+    ) from exc
 
 load_dotenv()
 runpod.api_key = os.getenv("RUNPOD_API_KEY")
@@ -125,7 +132,10 @@ def _resolve_ssh_target_from_runtime(pod: dict) -> tuple[str, str]:
             return str(ip), str(port)
 
     if not IP:
-        raise RuntimeError("Could not resolve pod SSH IP/port. Set RUNPOD_SSH_IP and RUNPOD_SSH_PORT.")
+        raise RuntimeError(
+            "Could not resolve pod SSH IP/port from RunPod API.\n"
+            "Set RUNPOD_SSH_IP and RUNPOD_SSH_PORT in .env (from RunPod dashboard → Connect → SSH)."
+        )
     return IP, PORT
 
 
@@ -339,18 +349,18 @@ python3 -m compileall -q . || true
 
 echo ""
 echo "Running pilot dataset generator if available..."
-if [ -f scripts/03_generate_synthetic.py ] && [ -f configs/pilot.yaml ]; then
-    python3 -u scripts/03_generate_synthetic.py --config configs/pilot.yaml 2>&1 | tee generate_synthetic.log
+if [ -f code/scripts/03_generate_synthetic.py ] && [ -f configs/pilot.yaml ]; then
+    python3 -u code/scripts/03_generate_synthetic.py --config configs/pilot.yaml 2>&1 | tee generate_synthetic.log
 else
-    echo "Skipping generation: scripts/03_generate_synthetic.py or configs/pilot.yaml not found."
+    echo "Skipping generation: code/scripts/03_generate_synthetic.py or configs/pilot.yaml not found."
 fi
 
 echo ""
 echo "Creating contact sheets if visualization script exists..."
-if [ -f scripts/04_visualize_samples.py ]; then
-    python3 -u scripts/04_visualize_samples.py 2>&1 | tee visualize_samples.log || true
+if [ -f code/scripts/04_visualize_samples.py ]; then
+    python3 -u code/scripts/04_visualize_samples.py 2>&1 | tee visualize_samples.log || true
 else
-    echo "Skipping visualization: scripts/04_visualize_samples.py not found."
+    echo "Skipping visualization: code/scripts/04_visualize_samples.py not found."
 fi
 
 echo ""
@@ -440,29 +450,58 @@ def run_remote_job() -> None:
 
     print(f"Starting/resuming pod: {POD_ID}")
 
+    resume_succeeded = False
+    last_resume_error = ""
     for attempt in range(30):
         try:
             runpod.resume_pod(POD_ID, GPU_COUNT)
+            resume_succeeded = True
+            print("Pod resume/start accepted by RunPod API.")
             break
         except Exception as e:
             msg = str(e)
+            last_resume_error = msg
             if "CERTIFICATE_VERIFY_FAILED" in msg or "SSLCertVerificationError" in msg:
                 print("RunPod API TLS verify failed locally; enabling insecure SSL verify and retrying...")
                 _enable_insecure_runpod_api_ssl_verify()
                 continue
             if "not enough free gpus" in msg.lower():
-                print(f"Attempt {attempt + 1}: no free GPUs on host. Retrying in 20s...")
+                print(f"Attempt {attempt + 1}/30: no free GPUs on host. Retrying in 20s...")
                 time.sleep(20)
                 continue
             raise
 
+    if not resume_succeeded:
+        raise RuntimeError(
+            "RunPod could not allocate a GPU after 30 attempts (~10 min).\n"
+            f"Last API error: {last_resume_error}\n\n"
+            "What to do:\n"
+            "  1. Open https://www.runpod.io/console/pods and check pod status.\n"
+            "  2. Try a different GPU type / region, or wait and retry later.\n"
+            "  3. Or start the pod manually in the dashboard, copy SSH IP + port from Connect,\n"
+            "     then set RUNPOD_SSH_IP and RUNPOD_SSH_PORT in .env and rerun with STOP_POD=0."
+        )
+
     print("Waiting for pod runtime metadata...")
     pod = None
-    for _ in range(40):
+    for wait_i in range(40):
         pod = runpod.get_pod(POD_ID)
         if isinstance(pod, dict) and pod.get("runtime"):
             break
+        if wait_i % 6 == 0 and isinstance(pod, dict):
+            status = pod.get("desiredStatus") or pod.get("status") or "unknown"
+            print(f"  Pod status: {status} (waiting for runtime/SSH...)")
         time.sleep(5)
+
+    if not isinstance(pod, dict) or not pod.get("runtime"):
+        status = pod.get("desiredStatus") if isinstance(pod, dict) else "unknown"
+        raise RuntimeError(
+            "Pod never reported runtime/SSH metadata after ~3 minutes.\n"
+            f"Pod desiredStatus: {status}\n\n"
+            "The GPU may still be provisioning, or the host is stuck.\n"
+            "Start the pod manually in the RunPod dashboard, wait until Connect shows SSH,\n"
+            "then set RUNPOD_SSH_IP and RUNPOD_SSH_PORT in .env and rerun."
+        )
 
     ssh_ip, ssh_port = _resolve_ssh_target_from_runtime(pod)
     _wait_for_ssh(

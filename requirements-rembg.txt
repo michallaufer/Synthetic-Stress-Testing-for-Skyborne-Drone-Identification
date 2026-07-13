@@ -1,0 +1,2 @@
+# Optional: Gemini drone alpha conversion (scripts/utils/fix_gemini_drone_transparency.py)
+rembg>=2.0.50

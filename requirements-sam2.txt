@@ -1,0 +1,5 @@
+# Optional SAM2 mask extraction (annotate --use-sam2)
+# Install after base requirements.txt
+torch>=2.0
+sam2>=1.0
+huggingface_hub>=0.20

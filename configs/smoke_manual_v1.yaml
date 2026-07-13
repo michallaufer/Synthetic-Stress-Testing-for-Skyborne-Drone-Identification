@@ -1,0 +1,84 @@
+# Smoke-test synthetic dataset — manual SAM2 assets + curated backgrounds
+# 220 images across three synthetic subsets (do not use for final benchmark yet).
+# See README.md — Manual SAM2 asset extraction.
+
+split: smoke_manual_v1
+seed: 42
+
+input:
+  asset_source: processed
+  exclude_quality_labels: [reject]
+
+  # Point at your manually curated background folder (flat or categorized subfolders).
+  backgrounds_dir: data/raw/backgrounds_manual
+  backgrounds_dir_fallback: C:/datasets/manual_curated/backgrounds
+
+  raw:
+    drones_dir: data/raw/drones
+    distractors_dir: data/raw/distractors
+
+  processed:
+    drones_dir: data/processed/assets/drones_sam2/images
+    drones_metadata_csv: data/processed/assets/drones_sam2/asset_metadata.csv
+
+    distractor_pools:
+      bird:
+        dir: data/processed/assets/birds_sam2/images
+        metadata_csv: data/processed/assets/birds_sam2/asset_metadata.csv
+      airplane:
+        dir: data/processed/assets/airplanes_sam2/images
+        metadata_csv: data/processed/assets/airplanes_sam2/asset_metadata.csv
+
+output:
+  images_dir: data/synthetic/smoke_manual_v1/images
+  labels_dir: data/synthetic/smoke_manual_v1/labels
+  metadata_csv: data/synthetic/smoke_manual_v1/metadata.csv
+
+generation:
+  mode: smoke_manual
+  num_images: 220
+  image_width: 640
+  image_height: 640
+  background_sampling: uniform_by_file
+  variable_sampling: balanced_marginals
+  subset_counts:
+    synthetic_drone_positive: 100
+    synthetic_distractor_only_bird: 30
+    synthetic_distractor_only_airplane: 30
+    synthetic_drone_plus_distractor_bird: 30
+    synthetic_drone_plus_distractor_airplane: 30
+
+variables:
+  drone_size_px: [8, 15, 30, 60]
+  bird_size_px: [8, 15, 30, 60]
+  airplane_size_px: [15, 30, 60, 100]
+  gaussian_noise_sigma: [0, 10, 20]
+  blur_level: [none, mild]
+  background_types:
+    - clean_sky
+    - cloudy_sky
+    - urban_skyline
+    - trees_sky
+  distractor_types:
+    - bird
+    - airplane
+
+blur:
+  none: 0
+  mild: 3
+
+classes:
+  drone: 0
+
+yolo:
+  label_distractors: false
+
+paste:
+  sky_region_top_fraction: 0.75
+  margin_px: 8
+
+distance_bins:
+  near: 60
+  mid: 30
+  far: 15
+  very_far: 0

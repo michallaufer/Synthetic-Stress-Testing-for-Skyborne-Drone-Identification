@@ -1,0 +1,19 @@
+# Placeholder for independent real-drone training data (not auto-downloaded).
+# Point dataset.yaml paths at your local YOLO-format drone dataset when available.
+#
+# Example local sources to convert manually:
+#   - BirdvsDrone2 YOLO exports under data/external/birdvsdrone2/
+#   - Seraphim or other local drone datasets
+#
+# Recommended protocol:
+#   1. Freeze full_curated_v1 as benchmark only (no training on it for final results).
+#   2. Train on real drone data OR a separate synthetic train set (different seed/name).
+#   3. Evaluate trained checkpoints on full_curated_v1 via configs/eval_full_curated_v1.yaml.
+
+path: data/training/real_drones_placeholder
+train: images/train
+val: images/val
+test: images/test
+nc: 1
+names:
+  0: drone

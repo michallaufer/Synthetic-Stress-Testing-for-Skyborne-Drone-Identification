@@ -302,46 +302,24 @@ Avoid:
 
 Prefer this structure:
 
-drone-stress-benchmark/
+```text
+synthetic-drone-stress-test/
   README.md
   .cursorrules
   requirements.txt
-  run_gpu.py
-
+  run_gpu.ipynb
+  code/
+    notebooks/
+    scripts/
+    src/drone_stress/
   configs/
-    pilot.yaml
-
-  data/
-    raw/
-      backgrounds/
-      drones/
-      distractors/
-
-    processed/
-      backgrounds_curated/
-      assets_drone/
-      assets_distractors/
-
-    synthetic/
-      pilot/
-        images/
-        labels/
-        metadata.csv
-
-  scripts/
-    01_filter_backgrounds.py
-    02_extract_assets.py
-    03_generate_synthetic.py
-    04_visualize_samples.py
-    05_evaluate_predictions.py
-
-  notebooks/
-    01_dataset_sanity_check.ipynb
-
-  outputs/
-    contact_sheets/
-    figures/
-    reports/
+  data/          # samples + links only in git; raw/processed/synthetic local/Drive
+  results/       # published metrics (no weights)
+  visuals/
+  slides/
+  docs/
+  outputs/       # local runtime only (gitignored)
+```
 
 Keep this structure updated if files are moved or renamed.
 

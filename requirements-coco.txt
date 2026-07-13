@@ -1,0 +1,3 @@
+# Optional COCO segmentation asset extraction (extract_coco_segmentation_assets.py)
+# Polygon masks work with OpenCV fallback; RLE masks require pycocotools.
+pycocotools>=2.0.6

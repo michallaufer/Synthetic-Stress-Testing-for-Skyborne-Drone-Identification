@@ -1,0 +1,19 @@
+model_name,model_type,iou_threshold,n_target_present,n_distractor_only,recall,tp,fn,mean_best_iou,false_positive_image_rate,fp_count,note,eval_subset,source_subset
+grounding_dino,grounding_dino,0.25,180,0,0.6222222222222222,112,68,0.3992359214987268,,0,Open-vocabulary drone prompts; boxes count as drone-like.,test_drone_positive,synthetic_drone_positive
+grounding_dino,grounding_dino,0.5,180,0,0.5388888888888889,97,83,0.3661479096634015,,0,Open-vocabulary drone prompts; boxes count as drone-like.,test_drone_positive,synthetic_drone_positive
+rtdetr_l_drone_finetuned,ultralytics_rtdetr,0.25,180,0,0.8166666666666667,147,33,0.547083744600817,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_drone_positive,synthetic_drone_positive
+rtdetr_l_drone_finetuned,ultralytics_rtdetr,0.5,180,0,0.7,126,54,0.5026500626312432,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_drone_positive,synthetic_drone_positive
+yolo11n_drone_finetuned,ultralytics_yolo,0.25,143,0,0.916083916083916,131,12,0.6770894062093953,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_drone_positive,synthetic_drone_positive
+yolo11n_drone_finetuned,ultralytics_yolo,0.5,143,0,0.8601398601398601,123,20,0.6547455839591558,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_drone_positive,synthetic_drone_positive
+grounding_dino,grounding_dino,0.25,0,180,,0,0,,1.0,1873,Open-vocabulary drone prompts; boxes count as drone-like.,test_hard_negative,synthetic_distractor_only
+grounding_dino,grounding_dino,0.5,0,180,,0,0,,1.0,1873,Open-vocabulary drone prompts; boxes count as drone-like.,test_hard_negative,synthetic_distractor_only
+rtdetr_l_drone_finetuned,ultralytics_rtdetr,0.25,0,180,,0,0,,1.0,7218,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_hard_negative,synthetic_distractor_only
+rtdetr_l_drone_finetuned,ultralytics_rtdetr,0.5,0,180,,0,0,,1.0,7218,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_hard_negative,synthetic_distractor_only
+yolo11n_drone_finetuned,ultralytics_yolo,0.25,0,62,,0,0,,1.0,107,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_hard_negative,synthetic_distractor_only
+yolo11n_drone_finetuned,ultralytics_yolo,0.5,0,62,,0,0,,1.0,107,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_hard_negative,synthetic_distractor_only
+grounding_dino,grounding_dino,0.25,180,0,0.45,81,99,0.2916451434272637,,0,Open-vocabulary drone prompts; boxes count as drone-like.,test_mixed,synthetic_drone_plus_distractor
+grounding_dino,grounding_dino,0.5,180,0,0.3722222222222222,67,113,0.2585115809124144,,0,Open-vocabulary drone prompts; boxes count as drone-like.,test_mixed,synthetic_drone_plus_distractor
+rtdetr_l_drone_finetuned,ultralytics_rtdetr,0.25,180,0,0.8277777777777777,149,31,0.5596327783096829,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_mixed,synthetic_drone_plus_distractor
+rtdetr_l_drone_finetuned,ultralytics_rtdetr,0.5,180,0,0.6944444444444444,125,55,0.5085642805080659,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_mixed,synthetic_drone_plus_distractor
+yolo11n_drone_finetuned,ultralytics_yolo,0.25,157,0,0.8280254777070064,130,27,0.604161588687791,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_mixed,synthetic_drone_plus_distractor
+yolo11n_drone_finetuned,ultralytics_yolo,0.5,157,0,0.7770700636942676,122,35,0.5840705594590379,,0,Fine-tuned / drone-capable checkpoint; drone_like_classes=['drone'],test_mixed,synthetic_drone_plus_distractor

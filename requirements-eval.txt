@@ -1,0 +1,6 @@
+# Optional dependencies for detector evaluation (install after requirements.txt)
+-r requirements-yolo.txt
+
+# Optional open-vocabulary detector (manual install — see README)
+# torch>=2.0
+# groundingdino  # clone IDEA-Research/GroundingDINO and install locally

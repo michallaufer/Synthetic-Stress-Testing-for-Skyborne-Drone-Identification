@@ -1,0 +1,4 @@
+# Optional: GPT-4o mini vision review for Places365 backgrounds
+openai>=1.40.0
+python-dotenv>=1.0.0
+pillow>=10.0

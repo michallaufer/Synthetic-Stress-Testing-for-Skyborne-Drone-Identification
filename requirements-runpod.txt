@@ -1,0 +1,6 @@
+# Local-only deps for the RunPod launcher (run_gpu).
+# Install: pip install -r requirements-runpod.txt
+runpod>=1.6.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+urllib3>=2.0.0

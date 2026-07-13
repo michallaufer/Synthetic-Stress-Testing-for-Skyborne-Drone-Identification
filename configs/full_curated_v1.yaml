@@ -1,0 +1,100 @@
+# Full curated v1 benchmark — first full synthetic stress-test dataset after smoke QA.
+# Based on smoke_curated_v4 (sky-approved backgrounds + upper_sky placement).
+# 3600 images = 1200 per subset × 24 stress cells ≈ 50 images/cell/subset.
+
+split: full_curated_v1
+seed: 42
+
+input:
+  asset_source: processed
+  require_accept_label: true
+  exclude_quality_labels: [reject, review]
+
+  backgrounds_dir: data/processed/backgrounds_sky_approved/images
+  backgrounds_metadata_csv: data/processed/backgrounds_sky_approved/backgrounds_metadata_final.csv
+  backgrounds_dir_fallback: data/processed/backgrounds_final/images
+
+  raw:
+    drones_dir: data/raw/drones
+    distractors_dir: data/raw/distractors
+
+  processed:
+    drones_dir: data/processed/assets_final/drones/images
+    drones_metadata_csv: data/processed/assets_final/drones/asset_metadata_final.csv
+
+    distractor_pools:
+      bird:
+        dir: data/processed/assets_final/birds/images
+        metadata_csv: data/processed/assets_final/birds/asset_metadata_final.csv
+      airplane:
+        dir: data/processed/assets_final/airplanes/images
+        metadata_csv: data/processed/assets_final/airplanes/asset_metadata_final.csv
+
+output:
+  images_dir: data/synthetic/full_curated_v1/images
+  labels_dir: data/synthetic/full_curated_v1/labels
+  metadata_csv: data/synthetic/full_curated_v1/metadata.csv
+
+generation:
+  mode: smoke_manual
+  num_images: 3600
+  image_width: 640
+  image_height: 640
+  background_sampling: uniform_by_file
+  variable_sampling: balanced_marginals
+  subset_counts:
+    synthetic_drone_positive: 1200
+    synthetic_distractor_only_bird: 600
+    synthetic_distractor_only_airplane: 600
+    synthetic_drone_plus_distractor_bird: 600
+    synthetic_drone_plus_distractor_airplane: 600
+
+variables:
+  drone_size_px: [8, 15, 30, 60]
+  bird_size_px: [8, 15, 30, 60]
+  airplane_size_px: [15, 30, 60, 100]
+  gaussian_noise_sigma: [0, 10, 20]
+  blur_level: [none, mild]
+  background_types:
+    - clear_upper_sky
+    - cloudy_sky
+    - sky_with_natural_landscape
+    - sky_with_built_environment
+    - runway_or_airport
+    - low_sky_or_contextual
+    - unknown
+  distractor_types:
+    - bird
+    - airplane
+
+blur:
+  none: 0
+  mild: 3
+
+classes:
+  drone: 0
+
+yolo:
+  label_distractors: false
+
+paste:
+  sky_region_top_fraction: 0.75
+  margin_px: 8
+
+placement:
+  mode: upper_sky
+  x_min_fraction: 0.05
+  x_max_fraction: 0.95
+  y_min_fraction: 0.03
+  y_max_fraction: 0.55
+  max_attempts: 50
+  avoid_overlap: true
+  max_iou: 0.05
+  min_object_distance_px: 20
+  margin_px: 8
+
+distance_bins:
+  near: 60
+  mid: 30
+  far: 15
+  very_far: 0

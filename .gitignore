@@ -6,9 +6,21 @@ data/raw/**
 
 data/processed/
 data/synthetic/
+data/training/
+data/external/
+
+# Local runtime dumps (full contact sheets, weights under outputs/)
 outputs/**
 !outputs/**/
 !outputs/**/.gitkeep
+
+# Legacy root code dirs if a partial move left them around
+/scripts/
+/src/
+/notebooks/
+
+# Published GitHub-facing artifacts ARE tracked:
+#   results/   visuals/   slides/   data/sample_*   data/README.md   data/dataset_links.md
 
 runs/
 weights/

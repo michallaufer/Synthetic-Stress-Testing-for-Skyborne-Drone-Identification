@@ -1,0 +1,10 @@
+﻿# YOLO11n training defaults used in final-clean Colab.
+# Entrypoint: scripts/train/train_yolo.py  OR  code/notebooks/colab_training_final_clean.ipynb
+model: yolo11n.pt
+data: data/training/full_curated_v1_split/dataset.yaml   # create via scripts/train/create_ultralytics_dataset_yaml.py
+epochs: 50
+imgsz: 640
+batch: 16
+project: outputs/training/yolo
+name: yolo11n_drone_colab
+# Weights are NOT committed; see data/dataset_links.md

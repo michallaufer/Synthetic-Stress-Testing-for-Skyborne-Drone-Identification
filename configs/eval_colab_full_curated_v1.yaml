@@ -1,0 +1,63 @@
+# Colab / GPU evaluation on full_curated_v1
+# GroundingDINO enabled; fine-tuned weights filled in after training cells run.
+
+dataset:
+  name: full_curated_v1
+  root: data/synthetic/full_curated_v1
+  images_dir: data/synthetic/full_curated_v1/images
+  labels_dir: data/synthetic/full_curated_v1/labels
+  metadata_csv: data/synthetic/full_curated_v1/metadata.csv
+  image_width: 640
+  image_height: 640
+
+evaluation:
+  iou_thresholds: [0.25, 0.5]
+  confidence_thresholds: [0.05, 0.10, 0.25, 0.50]
+  primary_iou_threshold: 0.5
+  tiny_object_iou_threshold: 0.25
+  target_class_name: drone
+  drone_class_id: 0
+  drone_like_classes:
+    - drone
+    - quadcopter
+    - unmanned aerial vehicle
+
+outputs:
+  root: outputs/evaluation/colab_full_curated_v1
+
+grounding_dino:
+  repo_dir: external/GroundingDINO
+  config_path: external/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py
+  checkpoint_path: weights/groundingdino/groundingdino_swint_ogc.pth
+  device: cuda
+  box_threshold: 0.20
+  text_threshold: 0.20
+  prompts:
+    - drone
+    - quadcopter
+    - unmanned aerial vehicle
+    - small drone in the sky
+
+models:
+  - name: grounding_dino
+    type: grounding_dino
+    enabled: true
+    weights: ""
+    confidence: 0.05
+    device: cuda
+
+  - name: yolo11n_drone_finetuned
+    type: ultralytics_yolo
+    enabled: true
+    weights: outputs/training/yolo/yolo11n_drone_colab/weights/best.pt
+    confidence: 0.05
+    drone_like_classes: [drone]
+    drone_class_id: 0
+
+  - name: rtdetr_l_drone_finetuned
+    type: ultralytics_rtdetr
+    enabled: true
+    weights: outputs/training/rtdetr/rtdetr_l_drone_colab/weights/best.pt
+    confidence: 0.05
+    drone_like_classes: [drone]
+    drone_class_id: 0

@@ -1,0 +1,10 @@
+﻿# RT-DETR-L training defaults used in final-clean Colab.
+# Entrypoint: scripts/train/train_rtdetr.py  OR  code/notebooks/colab_training_final_clean.ipynb
+model: rtdetr-l.pt
+data: data/training/full_curated_v1_split/dataset.yaml
+epochs: 50
+imgsz: 640
+batch: 8
+project: outputs/training/rtdetr
+name: rtdetr_l_drone_colab
+# Weights are NOT committed; see data/dataset_links.md

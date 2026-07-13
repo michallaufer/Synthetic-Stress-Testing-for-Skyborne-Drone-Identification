@@ -1,0 +1,11 @@
+# Google Colab GPU session — install after mounting project
+-r requirements.txt
+-r requirements-yolo.txt
+opencv-python-headless>=4.8
+ultralytics>=8.0
+supervision>=0.19
+timm
+transformers
+addict
+yapf
+pycocotools
